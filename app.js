@@ -29,7 +29,18 @@ let defaultCurrencies = [
 
         function defaultDatabase() {
             return {
-                settings: { companyName: "WATAN PLS LTD", phone: "+970567406000", address: "فلسطين", currencies: defaultCurrencies.map(c => ({...c})), logo: DEFAULT_LOGO_FILE },
+                settings: {
+                    companyName: "WATAN PLS LTD",
+                    phone: "+970567406000",
+                    address: "فلسطين",
+                    currencies: defaultCurrencies.map(c => ({...c})),
+                    logo: "",
+                    security: {
+                        pinHash: "",
+                        biometricEnabled: false,
+                        biometricCredentials: {}
+                    }
+                },
                 ledger: [],
                 clients: []
             };
@@ -67,8 +78,22 @@ let defaultCurrencies = [
                 ...c,
                 id: Number.isFinite(Number(c.id)) ? Number(c.id) : c.id
             }));
+            const rawSecurity = rawSettings.security && typeof rawSettings.security === 'object' ? rawSettings.security : {};
+            const biometricCredentials = rawSecurity.biometricCredentials && typeof rawSecurity.biometricCredentials === 'object'
+                ? rawSecurity.biometricCredentials
+                : {};
             return {
-                settings: { ...base.settings, ...rawSettings, currencies: currencies.length ? currencies : base.settings.currencies, logo: /^data:image\//i.test(String(rawSettings.logo || '')) ? '' : String(rawSettings.logo || '') },
+                settings: {
+                    ...base.settings,
+                    ...rawSettings,
+                    currencies: currencies.length ? currencies : base.settings.currencies,
+                    logo: /^data:image\//i.test(String(rawSettings.logo || '')) ? '' : String(rawSettings.logo || ''),
+                    security: {
+                        ...base.settings.security,
+                        ...rawSecurity,
+                        biometricCredentials
+                    }
+                },
                 ledger,
                 clients
             };
@@ -154,14 +179,18 @@ let defaultCurrencies = [
                     if(!remote) {
                         if(!remoteInitialized) {
                             remoteInitialized = true;
+                            await ensureSecurityInitialized({ save: false });
                             await saveDB({silent: true});
                         }
+                        updateLockBiometricUI();
                         return;
                     }
                     remoteInitialized = true;
                     db = normalizeDatabase(remote);
                     saveLocalOnly();
                     refreshSyncedViews();
+                    await ensureSecurityInitialized({ save: true });
+                    updateLockBiometricUI();
                 }, error => {
                     console.error('Firebase listener error:', error);
                     showToast('تعذر قراءة البيانات من فايربيز؛ تحقق من قواعد قاعدة البيانات', 'error');
@@ -211,6 +240,26 @@ let defaultCurrencies = [
                 };
             });
             document.querySelectorAll('.logo-img-placeholder').forEach(div => div.classList.add('hidden'));
+
+            const lockName = document.querySelector('.lock-company-name');
+            if(lockName) lockName.innerText = db.settings.companyName || 'WATAN PLS LTD';
+            const lockLogo = document.querySelector('.lock-logo-img');
+            if(lockLogo) {
+                lockLogo.src = logoUrl;
+                lockLogo.onerror = function() {
+                    if(this.dataset.fallbackApplied === '1') return;
+                    this.dataset.fallbackApplied = '1';
+                    this.src = DEFAULT_LOGO_FILE;
+                };
+            }
+
+            const security = ensureSecurityShape();
+            const biometricCheckbox = document.getElementById('set-biometric-enabled');
+            if(biometricCheckbox) {
+                biometricCheckbox.checked = Boolean(security.biometricEnabled && security.biometricCredentials[getDeviceId()]);
+            }
+            updateBiometricSettingsStatus();
+            updateLockBiometricUI();
         }
 
         function normalizeLedgerFinancials() {
@@ -515,86 +564,52 @@ let defaultCurrencies = [
         }
 
         // ================= RENDER REPORTS (WITH FILTERING) =================
-        function passesActiveDateFilter(date) {
-            if(activeFilterType === 'today') {
-                const start = new Date(); start.setHours(0,0,0,0);
-                return date >= start;
-            }
-            if(activeFilterType === 'week') {
-                const start = new Date(); start.setDate(start.getDate() - 7); start.setHours(0,0,0,0);
-                return date >= start;
-            }
-            if(activeFilterType === 'month') {
-                const start = new Date(); start.setMonth(start.getMonth() - 1); start.setHours(0,0,0,0);
-                return date >= start;
-            }
-            if(activeFilterType === 'year') {
-                const start = new Date(); start.setFullYear(start.getFullYear() - 1); start.setHours(0,0,0,0);
-                return date >= start;
-            }
-            if(activeFilterType === 'custom') {
-                const start = new Date(customStartDate); start.setHours(0,0,0,0);
-                const end = new Date(customEndDate); end.setHours(23,59,59,999);
-                return date >= start && date <= end;
-            }
-            return true;
-        }
-
-        function getVisibleReportData() {
-            const filterStr = String(document.getElementById('rep-search')?.value || '').trim().toLowerCase();
-            let runningBalance = 0;
-            const chronological = [...db.ledger].sort((a, b) => {
+        function renderReports() {
+            const filterStr = document.getElementById('rep-search').value.toLowerCase();
+            const tbody = document.getElementById('reports-body');
+            tbody.innerHTML = ''; let runBalance = 0; let totIn = 0; let totOut = 0;
+            const sorted = [...db.ledger].sort((a, b) => {
                 const byDate = new Date(a.date || 0) - new Date(b.date || 0);
                 return byDate || (Number(a.id) || 0) - (Number(b.id) || 0);
             });
+            
+            sorted.forEach(t => {
+                const d = new Date(t.date);
+                const valUsd = getUsdValueSafe(t);
+                let inAmt = 0, outAmt = 0;
+                if(t.subType === 'in') inAmt = valUsd;
+                if(t.subType === 'out') outAmt = valUsd;
+                
+                runBalance += (inAmt - outAmt);
 
-            const rows = [];
-            chronological.forEach(entry => {
-                const date = new Date(entry.date);
-                const valueUsd = getUsdValueSafe(entry);
-                const incoming = entry.subType === 'in' ? valueUsd : 0;
-                const outgoing = entry.subType === 'out' ? valueUsd : 0;
-                runningBalance += incoming - outgoing;
+                let passDate = true;
+                if(activeFilterType === 'today') { const ts = new Date(); ts.setHours(0,0,0,0); passDate = (d >= ts); }
+                else if(activeFilterType === 'week') { const ws = new Date(); ws.setDate(ws.getDate() - 7); ws.setHours(0,0,0,0); passDate = (d >= ws); }
+                else if(activeFilterType === 'month') { const ms = new Date(); ms.setMonth(ms.getMonth() - 1); ms.setHours(0,0,0,0); passDate = (d >= ms); }
+                else if(activeFilterType === 'year') { const ys = new Date(); ys.setFullYear(ys.getFullYear() - 1); ys.setHours(0,0,0,0); passDate = (d >= ys); }
+                else if(activeFilterType === 'custom') {
+                    const s = new Date(customStartDate); s.setHours(0,0,0,0);
+                    const e = new Date(customEndDate); e.setHours(23,59,59,999);
+                    passDate = (d >= s && d <= e);
+                }
 
-                if(!passesActiveDateFilter(date)) return;
-                const searchable = `${entry.client || ''} ${entry.ref || ''} ${entry.notes || ''}`.toLowerCase();
-                if(filterStr && !searchable.includes(filterStr)) return;
+                if(!passDate) return;
+                if(filterStr && !(t.client.toLowerCase().includes(filterStr) || t.ref.includes(filterStr) || t.notes?.toLowerCase().includes(filterStr))) return;
 
-                rows.push({ entry, date, incoming, outgoing, balance: runningBalance });
-            });
-
-            rows.reverse();
-            const totals = rows.reduce((acc, row) => {
-                acc.incoming += row.incoming;
-                acc.outgoing += row.outgoing;
-                return acc;
-            }, { incoming: 0, outgoing: 0 });
-            totals.difference = totals.incoming - totals.outgoing;
-            return { rows, totals };
-        }
-
-        function formatSignedAmount(value) {
-            return value < 0 ? `${Math.abs(value).toFixed(2)}-` : value.toFixed(2);
-        }
-
-        function renderReports() {
-            const tbody = document.getElementById('reports-body');
-            tbody.innerHTML = '';
-            const { rows, totals } = getVisibleReportData();
-
-            rows.forEach(({ entry: t, date: d, incoming: inAmt, outgoing: outAmt, balance }) => {
-                const balanceClass = balance < 0 ? 'text-red-600' : 'text-slate-800';
+                totIn += inAmt; totOut += outAmt;
+                const balanceClass = runBalance < 0 ? 'text-red-600' : 'text-slate-800';
+                
                 tbody.innerHTML += `
                     <tr>
                         <td class="text-xs text-slate-500">${d.toLocaleDateString('en-GB')}<br><span class="text-[10px]">${d.toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit'})}</span></td>
                         <td class="text-right leading-tight">
-                            <span class="font-bold text-slate-800 block">${t.client || '-'}</span>
-                            <span class="text-[10px] text-slate-500 bg-slate-200 px-1 rounded inline-block mt-1">م: ${t.ref || '-'} | ${t.amount || 0} ${t.currency || ''}</span>
+                            <span class="font-bold text-slate-800 block">${t.client}</span>
+                            <span class="text-[10px] text-slate-500 bg-slate-200 px-1 rounded inline-block mt-1">م: ${t.ref} | ${t.amount} ${t.currency}</span>
                             ${t.notes ? `<div class="text-xs text-blue-600 mt-1"><i class="fas fa-comment-alt"></i> ${t.notes}</div>` : ''}
                         </td>
                         <td class="text-green-600 font-black">${inAmt > 0 ? inAmt.toFixed(2) : '0'}</td>
                         <td class="text-red-600 font-black">${outAmt > 0 ? outAmt.toFixed(2) : '0'}</td>
-                        <td class="font-black ${balanceClass}" dir="ltr">${formatSignedAmount(balance)}</td>
+                        <td class="font-black ${balanceClass}" dir="ltr">${runBalance < 0 ? Math.abs(runBalance).toFixed(2)+'-' : runBalance.toFixed(2)}</td>
                         <td class="no-print">
                             <div class="flex justify-center items-center gap-2 bg-slate-50 p-1 rounded border">
                                 <select id="lang-${t.id}" class="text-xs font-bold border-0 bg-transparent text-slate-700 outline-none cursor-pointer">
@@ -613,9 +628,10 @@ let defaultCurrencies = [
                 `;
             });
 
-            document.getElementById('tot-in').innerText = totals.incoming.toFixed(2);
-            document.getElementById('tot-out').innerText = totals.outgoing.toFixed(2);
-            document.getElementById('tot-diff').innerText = formatSignedAmount(totals.difference);
+            document.getElementById('tot-in').innerText = totIn.toFixed(2);
+            document.getElementById('tot-out').innerText = totOut.toFixed(2);
+            const diff = totIn - totOut;
+            document.getElementById('tot-diff').innerText = diff < 0 ? Math.abs(diff).toFixed(2)+'-' : diff.toFixed(2);
         }
 
         async function deleteLedgerEntry(id) {
@@ -684,138 +700,69 @@ let defaultCurrencies = [
         }
 
         // ================= EXCEL EXPORT =================
-        function reportPeriodLabel() {
-            const label = document.getElementById('active-filter-text')?.innerText?.trim();
-            return label || 'كل الأوقات';
-        }
-
-        function reportDetailsText(entry) {
-            const parts = [entry.client || '-', `المرجع: ${entry.ref || '-'}`, `${entry.amount || 0} ${entry.currency || ''}`];
-            if(entry.notes) parts.push(`ملاحظات: ${entry.notes}`);
-            return parts.join(' | ');
-        }
-
         function exportReportsExcel() {
-            showToast('جاري تصدير كل عمليات الفترة الظاهرة لإكسل...', 'success');
-            const { rows, totals } = getVisibleReportData();
-            const wsData = [
-                ['إجمالي الفترة الظاهرة', '', totals.incoming, totals.outgoing, totals.difference],
-                [`الفترة: ${reportPeriodLabel()}`, `عدد العمليات: ${rows.length}`, '', '', ''],
-                [],
-                ['التاريخ', 'التفاصيل', 'وارد (دولار)', 'منصرف (دولار)', 'الرصيد التراكمي']
-            ];
-
-            rows.forEach(({ entry, date, incoming, outgoing, balance }) => {
-                wsData.push([
-                    `${date.toLocaleDateString('en-GB')} ${date.toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit'})}`,
-                    reportDetailsText(entry),
-                    Number(incoming.toFixed(2)),
-                    Number(outgoing.toFixed(2)),
-                    Number(balance.toFixed(2))
-                ]);
+            showToast('جاري تصدير التقرير لإكسل...', 'success');
+            const ws_data = [['التاريخ', 'التفاصيل', 'وارد (دولار)', 'منصرف (دولار)', 'الرصيد التراكمي']];
+            const rows = document.querySelectorAll('#reports-body tr');
+            rows.forEach(tr => {
+                const cols = tr.querySelectorAll('td');
+                if(cols.length > 0) { ws_data.push([ cols[0].textContent.replace(/\n/g, ' ').trim(), cols[1].textContent.replace(/\n/g, ' ').trim(), cols[2].textContent.trim(), cols[3].textContent.trim(), cols[4].textContent.trim() ]); }
             });
-
-            const ws = XLSX.utils.aoa_to_sheet(wsData);
+            const totIn = document.getElementById('tot-in').innerText;
+            const totOut = document.getElementById('tot-out').innerText;
+            const totDiff = document.getElementById('tot-diff').innerText;
+            ws_data.push(['', 'الإجماليات للفترة المحددة:', totIn, totOut, totDiff]);
+            
+            const ws = XLSX.utils.aoa_to_sheet(ws_data);
             ws['!dir'] = 'rtl';
-            ws['!cols'] = [{wch: 23}, {wch: 55}, {wch: 18}, {wch: 18}, {wch: 20}];
-            ws['!merges'] = [
-                {s:{r:0,c:0}, e:{r:0,c:1}}
-            ];
-            ws['!autofilter'] = { ref: `A4:E${Math.max(4, wsData.length)}` };
+            ws['!cols'] = [{wch: 20}, {wch: 40}, {wch: 15}, {wch: 15}, {wch: 20}];
             const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'كشف الحساب');
+            XLSX.utils.book_append_sheet(wb, ws, "كشف الحساب");
             XLSX.writeFile(wb, `CashTop_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
         }
 
-        // ================= PDF EXPORT (ALL VISIBLE PERIOD ROWS) =================
-        async function exportReportsPDF() {
-            showToast('جاري تجهيز كل عمليات الفترة الظاهرة في PDF...', 'success');
-            const { rows, totals } = getVisibleReportData();
+        // ================= PDF EXPORT (REPORTS TABLE) =================
+        function exportReportsPDF() {
+            showToast('جاري تجهيز تقرير PDF احترافي...', 'success');
+            const clonedTable = document.getElementById('reports-table').cloneNode(true);
+            clonedTable.querySelectorAll('th:last-child, td:last-child').forEach(el => el.remove());
+            
             const container = document.createElement('div');
-            container.className = 'print-container p-6';
+            container.className = 'print-container p-8';
             container.dir = 'rtl';
-            container.style.fontFamily = "'Cairo', sans-serif";
-            container.style.background = '#ffffff';
-            container.style.width = '1120px';
-
-            const tableRows = rows.map(({ entry, date, incoming, outgoing, balance }) => `
-                <tr style="page-break-inside:avoid; break-inside:avoid;">
-                    <td>${date.toLocaleDateString('en-GB')}<br><small>${date.toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit'})}</small></td>
-                    <td style="text-align:right;">${reportDetailsText(entry)}</td>
-                    <td style="color:#15803d;font-weight:800;">${incoming > 0 ? incoming.toFixed(2) : '0'}</td>
-                    <td style="color:#dc2626;font-weight:800;">${outgoing > 0 ? outgoing.toFixed(2) : '0'}</td>
-                    <td dir="ltr" style="font-weight:800;">${formatSignedAmount(balance)}</td>
-                </tr>
-            `).join('');
-
+            const filterText = document.getElementById('active-filter-text').innerText;
+            
             container.innerHTML = `
-                <div style="text-align:center;border-bottom:4px solid #0f172a;padding-bottom:14px;margin-bottom:16px;">
-                    <h1 style="font-size:28px;font-weight:900;margin:0;color:#0f172a;">${db.settings.companyName}</h1>
-                    <h2 style="font-size:18px;font-weight:700;margin:8px 0;color:#475569;">كشف حساب الصندوق العام (بالدولار الأمريكي)</h2>
-                    <div style="display:flex;justify-content:space-between;gap:12px;margin-top:12px;font-size:13px;font-weight:700;background:#f1f5f9;padding:10px;border-radius:8px;">
+                <div class="text-center mb-6 border-b-4 border-slate-800 pb-4">
+                    <h1 class="text-3xl font-black text-slate-900">${db.settings.companyName}</h1>
+                    <h2 class="text-xl font-bold text-slate-600 mt-2">كشف حساب الصندوق العام (بالدولار الأمريكي)</h2>
+                    <div class="flex justify-between items-center mt-4 text-sm font-bold text-slate-700 bg-slate-100 p-2 rounded">
                         <span>تاريخ الطباعة: ${new Date().toLocaleString('ar-EG')}</span>
-                        <span>الفترة: ${reportPeriodLabel()}</span>
-                        <span>عدد العمليات: ${rows.length}</span>
+                        ${filterText ? `<span class="text-blue-700 bg-blue-100 px-2 py-1 rounded">الفترة: ${filterText}</span>` : '<span>الفترة: كل الأوقات</span>'}
                     </div>
                 </div>
-
-                <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:1px;background:#cbd5e1;border:1px solid #cbd5e1;margin-bottom:14px;border-radius:8px;overflow:hidden;text-align:center;font-weight:900;">
-                    <div style="background:#0f172a;color:white;padding:12px;">إجمالي الفترة الظاهرة</div>
-                    <div style="background:#dcfce7;color:#166534;padding:12px;">الوارد: ${totals.incoming.toFixed(2)}</div>
-                    <div style="background:#fee2e2;color:#991b1b;padding:12px;">المنصرف: ${totals.outgoing.toFixed(2)}</div>
-                    <div style="background:#e2e8f0;color:#0f172a;padding:12px;">الصافي: ${formatSignedAmount(totals.difference)}</div>
-                </div>
-
-                <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                    <thead style="display:table-header-group;">
-                        <tr>
-                            <th style="width:16%;">التاريخ</th>
-                            <th>التفاصيل</th>
-                            <th style="width:14%;">وارد (دولار)</th>
-                            <th style="width:14%;">منصرف (دولار)</th>
-                            <th style="width:14%;">الرصيد</th>
-                        </tr>
-                    </thead>
-                    <tbody>${tableRows || '<tr><td colspan="5" style="padding:30px;text-align:center;">لا توجد عمليات ضمن الفترة الظاهرة</td></tr>'}</tbody>
-                </table>
             `;
+            
+            clonedTable.classList.remove('w-full', 'overflow-x-auto');
+            clonedTable.style.width = '100%';
+            clonedTable.style.borderCollapse = 'collapse';
+            clonedTable.querySelectorAll('th, td').forEach(cell => { cell.style.border = '1px solid #cbd5e1'; cell.style.padding = '10px'; cell.style.textAlign = 'center'; });
+            clonedTable.querySelectorAll('th').forEach(th => { th.style.backgroundColor = '#f1f5f9'; th.style.color = '#0f172a'; });
 
-            container.querySelectorAll('th, td').forEach(cell => {
-                cell.style.border = '1px solid #cbd5e1';
-                cell.style.padding = '9px';
-                cell.style.textAlign = cell.style.textAlign || 'center';
-            });
-            container.querySelectorAll('th').forEach(th => {
-                th.style.backgroundColor = '#e2e8f0';
-                th.style.color = '#0f172a';
-                th.style.fontWeight = '900';
-            });
-
+            container.appendChild(clonedTable);
             const wrapper = document.getElementById('print-wrapper');
-            const oldHtml = wrapper.innerHTML;
+            const oldHtml = wrapper.innerHTML; 
             wrapper.innerHTML = '';
             wrapper.appendChild(container);
             wrapper.className = 'offscreen-render';
 
-            const options = {
-                margin: [0.35, 0.3, 0.35, 0.3],
-                filename: `CashTop_Report_${Date.now()}.pdf`,
-                image: { type: 'jpeg', quality: 1 },
-                html2canvas: { scale: 2, useCORS: true, allowTaint: false, backgroundColor: '#ffffff', logging: false },
-                jsPDF: { unit: 'in', format: 'a4', orientation: 'landscape' },
-                pagebreak: { mode: ['css', 'legacy'], before: '.page-break-before', avoid: 'tr' }
-            };
-
-            try {
-                await html2pdf().set(options).from(container).save();
-                showToast('تم تحميل كل عمليات الفترة الظاهرة في PDF');
-            } catch(error) {
-                console.error('Report PDF export error:', error);
-                showToast('تعذر تجهيز تقرير PDF', 'error');
-            } finally {
+            const opt = { margin: 0.5, filename: `CashTop_Report_${Date.now()}.pdf`, image: { type: 'jpeg', quality: 1 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'in', format: 'a4', orientation: 'landscape' } };
+            
+            html2pdf().set(opt).from(container).save().then(() => {
                 wrapper.className = 'hidden';
                 wrapper.innerHTML = oldHtml;
-            }
+                showToast('تم تحميل ملف PDF بنجاح');
+            });
         }
 
         // ================= RECEIPT PRINT & TRANSLATION =================
@@ -825,22 +772,8 @@ let defaultCurrencies = [
             const isEn = lang === 'en';
             
             tmpl.dir = isEn ? 'ltr' : 'rtl';
-            tmpl.style.fontFamily = "'Cairo', sans-serif";
             const receiptLogo = tmpl.querySelector('.logo-img');
-            if(receiptLogo) {
-                receiptLogo.src = getEffectiveLogo();
-                receiptLogo.classList.remove('hidden');
-                receiptLogo.setAttribute('referrerpolicy', 'no-referrer');
-                receiptLogo.onerror = function() {
-                    if(this.dataset.fallbackApplied === '1') {
-                        this.classList.add('hidden');
-                        return;
-                    }
-                    this.dataset.fallbackApplied = '1';
-                    this.src = DEFAULT_LOGO_FILE;
-                    this.classList.remove('hidden');
-                };
-            }
+            if(receiptLogo) { receiptLogo.src = getEffectiveLogo(); receiptLogo.classList.remove('hidden'); }
             
             // تغيير اسم الشركة (للوطن) عند اختيار الإنجليزية
             const titleEl = document.getElementById('pr-comp-name');
@@ -860,7 +793,7 @@ let defaultCurrencies = [
             
             const badgeEl = document.getElementById('pr-title');
             badgeEl.innerText = isEn ? typeStrEn : typeStrAr;
-            badgeEl.className = entry.subType === 'in' ? 'receipt-title-bg receipt-title-in' : 'receipt-title-bg receipt-title-out';
+            badgeEl.className = entry.subType === 'in' ? 'text-xl font-black bg-green-200 text-green-900 rounded receipt-badge receipt-title-badge' : 'text-xl font-black bg-red-200 text-red-900 rounded receipt-badge receipt-title-badge';
             
             document.getElementById('pr-ref').innerText = entry.ref; 
             document.getElementById('pr-date').innerText = new Date(entry.date).toLocaleString('ar-EG'); 
@@ -872,9 +805,9 @@ let defaultCurrencies = [
             let extraStr = '';
             if(entry.type === 'transfer') { 
                 if(isEn) {
-                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-left rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3">Transfer Details</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">Sender:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Sender Phone:</span> <strong class="text-lg">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver Phone:</span> <strong class="text-lg">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Dest. Country:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Agent:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
+                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-left rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3"><i class="fas fa-info-circle text-blue-500"></i> Transfer Details</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">Sender:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Sender Phone:</span> <strong class="text-lg">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver Phone:</span> <strong class="text-lg">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Dest. Country:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Agent:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
                 } else {
-                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-right rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3">تفاصيل الحوالة</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">المرسل:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المرسل:</span> <strong class="text-lg" dir="ltr">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">المستلم:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المستلم:</span> <strong class="text-lg" dir="ltr">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">بلد الاستلام:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">الوكيل المراسل:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
+                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-right rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3"><i class="fas fa-info-circle text-blue-500"></i> تفاصيل الحوالة</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">المرسل:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المرسل:</span> <strong class="text-lg" dir="ltr">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">المستلم:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المستلم:</span> <strong class="text-lg" dir="ltr">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">بلد الاستلام:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">الوكيل المراسل:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
                 }
             } 
             else if (entry.type === 'check') { 
@@ -887,7 +820,7 @@ let defaultCurrencies = [
             else if(entry.notes) { 
                 extraStr += `<p class="border p-2 bg-slate-50 rounded text-${isEn?'left':'right'}"><strong>${isEn?'Notes:':'ملاحظات:'}</strong> ${entry.notes}</p>`; 
             }
-            const extraEl = document.getElementById('pr-extra'); extraEl.style.fontFamily = "'Cairo', sans-serif"; extraEl.innerHTML = extraStr; 
+            document.getElementById('pr-extra').innerHTML = extraStr; 
             return tmpl;
         }
 
@@ -909,33 +842,6 @@ let defaultCurrencies = [
             return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         }
 
-        function pause(ms) {
-            return new Promise(resolve => setTimeout(resolve, ms));
-        }
-
-        function buildPrintFrameDocument(receiptHtml, dir = 'rtl') {
-            const styleNodes = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]')).map(node => node.outerHTML).join('\n');
-            return [
-                '<!DOCTYPE html>',
-                `<html lang="ar" dir="${dir}">`,
-                '<head>',
-                '<meta charset="UTF-8">',
-                '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-                `<base href="${location.href}">`,
-                styleNodes,
-                '<style>' +
-                    'html,body{background:#fff!important;margin:0;padding:0;font-family:"Cairo",sans-serif!important;}' +
-                    'body{display:block!important;}' +
-                    '#print-root{width:100%;padding:0;margin:0;background:#fff;}' +
-                    '#print-root #tmpl-receipt{width:190mm!important;max-width:190mm!important;min-height:260mm!important;margin:0 auto!important;padding:9mm!important;box-sizing:border-box!important;background:#fff!important;border:1.2mm solid #0f172a!important;}' +
-                    '#print-root,#print-root *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;font-family:"Cairo",sans-serif!important;}' +
-                '</style>',
-                '</head>',
-                `<body><div id="print-root">${receiptHtml}</div></body>`,
-                '</html>'
-            ].join('');
-        }
-
         async function printLedgerReceipt(id) {
             const lang = document.getElementById('lang-' + id)?.value || 'ar';
             await triggerPrint(id, lang);
@@ -944,66 +850,20 @@ let defaultCurrencies = [
         async function triggerPrint(id, lang = 'ar') {
             const el = prepareReceiptDOM(id, lang); if(!el) return;
             const wrapper = document.getElementById('print-wrapper');
-            wrapper.className = 'offscreen-render';
-            showToast('جاري تجهيز الوصل للطباعة...', 'success');
-            try {
-                await waitForReceiptAssets(el);
-                await nextPaint();
-                await pause(250);
-                const iframe = document.createElement('iframe');
-                iframe.style.position = 'fixed';
-                iframe.style.right = '0';
-                iframe.style.bottom = '0';
-                iframe.style.width = '0';
-                iframe.style.height = '0';
-                iframe.style.border = '0';
-                iframe.setAttribute('aria-hidden', 'true');
-                document.body.appendChild(iframe);
-
-                const frameDoc = iframe.contentWindow.document;
-                frameDoc.open();
-                frameDoc.write(buildPrintFrameDocument(el.outerHTML, el.dir || 'rtl'));
-                frameDoc.close();
-
-                await new Promise(resolve => {
-                    const done = () => resolve();
-                    iframe.onload = done;
-                    setTimeout(done, 700);
-                });
-
-                const frameWin = iframe.contentWindow;
-                if(frameWin.document && frameWin.document.fonts && frameWin.document.fonts.ready) {
-                    try { await frameWin.document.fonts.ready; } catch(_) {}
-                }
-                const frameImgs = Array.from(frameWin.document.images || []);
-                await Promise.all(frameImgs.map(img => new Promise(resolve => {
-                    if(img.complete && img.naturalWidth > 0) return resolve();
-                    const done = () => resolve();
-                    img.addEventListener('load', done, {once:true});
-                    img.addEventListener('error', done, {once:true});
-                    setTimeout(done, 4000);
-                })));
-                await pause(300);
-
-                await new Promise(resolve => {
-                    let finished = false;
-                    const cleanup = () => {
-                        if(finished) return;
-                        finished = true;
-                        setTimeout(() => iframe.remove(), 300);
-                        resolve();
-                    };
-                    frameWin.addEventListener('afterprint', cleanup, { once: true });
-                    setTimeout(cleanup, 60000);
-                    frameWin.focus();
-                    frameWin.print();
-                });
-            } catch(error) {
-                console.error('Print error:', error);
-                showToast('تعذر فتح الطباعة، حاول مرة أخرى', 'error');
-            } finally {
+            wrapper.className = 'print-mode offscreen-render';
+            await waitForReceiptAssets(el);
+            await nextPaint();
+            let cleaned = false;
+            const cleanup = () => {
+                if(cleaned) return;
+                cleaned = true;
                 wrapper.className = 'hidden';
-            }
+                window.removeEventListener('afterprint', cleanup);
+            };
+            window.addEventListener('afterprint', cleanup, {once: true});
+            setTimeout(cleanup, 60000);
+            window.print();
+            setTimeout(cleanup, 1500);
         }
 
         async function downloadReceipt(id, type) {
@@ -1115,6 +975,332 @@ let defaultCurrencies = [
 
 
 
+        // ================= APP LOCK & BIOMETRIC =================
+        const DEVICE_ID_KEY = 'watanSecurityDeviceId';
+        let appUnlocked = false;
+        let securityInitializationInProgress = false;
+
+        function ensureSecurityShape() {
+            db.settings = db.settings || {};
+            const current = db.settings.security && typeof db.settings.security === 'object' ? db.settings.security : {};
+            const credentials = current.biometricCredentials && typeof current.biometricCredentials === 'object'
+                ? current.biometricCredentials
+                : {};
+            db.settings.security = {
+                pinHash: String(current.pinHash || ''),
+                biometricEnabled: Boolean(current.biometricEnabled),
+                biometricCredentials: credentials,
+                pinUpdatedAt: current.pinUpdatedAt || null
+            };
+            return db.settings.security;
+        }
+
+        function getDeviceId() {
+            let id = localStorage.getItem(DEVICE_ID_KEY);
+            if(id) return id;
+            const random = new Uint8Array(16);
+            crypto.getRandomValues(random);
+            id = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
+            localStorage.setItem(DEVICE_ID_KEY, id);
+            return id;
+        }
+
+        function randomBytes(length = 32) {
+            const bytes = new Uint8Array(length);
+            crypto.getRandomValues(bytes);
+            return bytes;
+        }
+
+        function bytesToBase64Url(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        }
+
+        function base64UrlToBytes(value) {
+            const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+            const padding = '='.repeat((4 - normalized.length % 4) % 4);
+            const binary = atob(normalized + padding);
+            return Uint8Array.from(binary, char => char.charCodeAt(0));
+        }
+
+        async function hashPin(pin) {
+            const bytes = new TextEncoder().encode(String(pin));
+            const digest = await crypto.subtle.digest('SHA-256', bytes);
+            return bytesToBase64Url(digest);
+        }
+
+        async function verifyAppPin(pin) {
+            if(!/^\d{4}$/.test(String(pin))) return false;
+            const security = ensureSecurityShape();
+            if(!security.pinHash) return String(pin) === '0000';
+            return (await hashPin(pin)) === security.pinHash;
+        }
+
+        async function ensureSecurityInitialized(options = {}) {
+            const security = ensureSecurityShape();
+            if(security.pinHash || securityInitializationInProgress) return;
+            securityInitializationInProgress = true;
+            try {
+                security.pinHash = await hashPin('0000');
+                security.pinUpdatedAt = Date.now();
+                saveLocalOnly();
+                if(options.save !== false && firebaseRootRef) await saveDB({ silent: true });
+            } finally {
+                securityInitializationInProgress = false;
+            }
+        }
+
+        function lockAppUI() {
+            appUnlocked = false;
+            document.body.classList.add('app-is-locked');
+            const screen = document.getElementById('app-lock-screen');
+            if(screen) screen.classList.remove('unlocked');
+            updateLockBiometricUI();
+        }
+
+        function unlockAppUI() {
+            appUnlocked = true;
+            document.body.classList.remove('app-is-locked');
+            const screen = document.getElementById('app-lock-screen');
+            if(screen) screen.classList.add('unlocked');
+            closePinLoginModal();
+        }
+
+        function openPinLoginModal() {
+            const modal = document.getElementById('pin-login-modal');
+            if(!modal) return;
+            clearPinInputs();
+            modal.classList.remove('hidden');
+            setTimeout(() => document.querySelector('.pin-digit')?.focus(), 60);
+        }
+
+        function closePinLoginModal() {
+            const modal = document.getElementById('pin-login-modal');
+            if(modal) modal.classList.add('hidden');
+            clearPinInputs();
+        }
+
+        function clearPinInputs() {
+            document.querySelectorAll('.pin-digit').forEach(input => { input.value = ''; });
+            const error = document.getElementById('pin-login-error');
+            if(error) error.classList.add('hidden');
+        }
+
+        function setupPinInputs() {
+            const inputs = Array.from(document.querySelectorAll('.pin-digit'));
+            inputs.forEach((input, index) => {
+                input.addEventListener('input', event => {
+                    const digit = String(event.target.value || '').replace(/\D/g, '').slice(-1);
+                    event.target.value = digit;
+                    if(digit && inputs[index + 1]) inputs[index + 1].focus();
+                    if(digit && index === inputs.length - 1) submitPinLogin();
+                });
+                input.addEventListener('keydown', event => {
+                    if(event.key === 'Backspace' && !input.value && inputs[index - 1]) inputs[index - 1].focus();
+                    if(event.key === 'Enter') submitPinLogin();
+                });
+                input.addEventListener('paste', event => {
+                    event.preventDefault();
+                    const digits = (event.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 4);
+                    digits.split('').forEach((digit, position) => { if(inputs[position]) inputs[position].value = digit; });
+                    if(digits.length === 4) submitPinLogin();
+                    else inputs[Math.min(digits.length, inputs.length - 1)]?.focus();
+                });
+            });
+        }
+
+        async function submitPinLogin() {
+            const inputs = Array.from(document.querySelectorAll('.pin-digit'));
+            const pin = inputs.map(input => input.value).join('');
+            const error = document.getElementById('pin-login-error');
+            if(pin.length !== 4) {
+                if(error) {
+                    error.innerText = 'أدخل الأرقام الأربعة';
+                    error.classList.remove('hidden');
+                }
+                return;
+            }
+            try {
+                if(await verifyAppPin(pin)) {
+                    unlockAppUI();
+                    return;
+                }
+            } catch(authenticationError) {
+                console.error('PIN verification error:', authenticationError);
+            }
+            if(error) {
+                error.innerText = 'رمز القفل غير صحيح';
+                error.classList.remove('hidden');
+            }
+            inputs.forEach(input => { input.value = ''; });
+            inputs[0]?.focus();
+        }
+
+        function isBiometricContextSupported() {
+            return Boolean(window.isSecureContext && window.PublicKeyCredential && navigator.credentials);
+        }
+
+        async function hasPlatformBiometricAuthenticator() {
+            if(!isBiometricContextSupported()) return false;
+            if(typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== 'function') return true;
+            try {
+                return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+            } catch(error) {
+                return false;
+            }
+        }
+
+        function updateLockBiometricUI() {
+            const button = document.getElementById('lock-biometric-btn');
+            const hint = document.getElementById('lock-biometric-hint');
+            if(!button) return;
+            const security = ensureSecurityShape();
+            const credentialId = security.biometricCredentials[getDeviceId()];
+            const enabled = Boolean(security.biometricEnabled && credentialId && isBiometricContextSupported());
+            button.disabled = !enabled;
+            button.classList.toggle('is-disabled', !enabled);
+            if(hint) {
+                if(enabled) hint.innerText = 'يمكنك الدخول باستخدام بصمة الجهاز';
+                else if(!isBiometricContextSupported()) hint.innerText = 'البصمة تحتاج فتح التطبيق من رابط HTTPS';
+                else hint.innerText = 'يمكن تفعيل البصمة من الإعدادات';
+            }
+        }
+
+        function updateBiometricSettingsStatus(message = '') {
+            const status = document.getElementById('biometric-settings-status');
+            if(!status) return;
+            if(message) {
+                status.innerText = message;
+                return;
+            }
+            const security = ensureSecurityShape();
+            const registered = Boolean(security.biometricCredentials[getDeviceId()]);
+            if(registered && security.biometricEnabled) status.innerText = 'البصمة مفعلة على هذا الجهاز ومحفوظ تفعيلها في Firebase.';
+            else if(!isBiometricContextSupported()) status.innerText = 'لتفعيل البصمة افتح التطبيق من رابط HTTPS أو من التطبيق المثبت.';
+            else status.innerText = 'البصمة غير مفعلة على هذا الجهاز.';
+        }
+
+        async function changeAppPin() {
+            const currentPin = document.getElementById('set-current-pin')?.value.trim() || '';
+            const newPin = document.getElementById('set-new-pin')?.value.trim() || '';
+            const confirmPin = document.getElementById('set-confirm-pin')?.value.trim() || '';
+            if(!/^\d{4}$/.test(currentPin) || !/^\d{4}$/.test(newPin)) {
+                showToast('رمز القفل يجب أن يكون 4 أرقام', 'error');
+                return;
+            }
+            if(newPin !== confirmPin) {
+                showToast('تأكيد رمز القفل غير مطابق', 'error');
+                return;
+            }
+            if(!(await verifyAppPin(currentPin))) {
+                showToast('رمز القفل الحالي غير صحيح', 'error');
+                return;
+            }
+            const security = ensureSecurityShape();
+            security.pinHash = await hashPin(newPin);
+            security.pinUpdatedAt = Date.now();
+            const synced = await saveDB();
+            ['set-current-pin', 'set-new-pin', 'set-confirm-pin'].forEach(id => {
+                const input = document.getElementById(id);
+                if(input) input.value = '';
+            });
+            showToast(synced ? 'تم تغيير رمز القفل وحفظه في Firebase' : 'تم تغيير رمز القفل محلياً وسيُزامن لاحقاً');
+        }
+
+        async function registerBiometricCredential() {
+            if(!(await hasPlatformBiometricAuthenticator())) {
+                throw new Error('لا توجد بصمة مدعومة أو أن التطبيق ليس على HTTPS');
+            }
+            const deviceId = getDeviceId();
+            const credential = await navigator.credentials.create({
+                publicKey: {
+                    challenge: randomBytes(32),
+                    rp: { name: db.settings.companyName || 'WATAN PLS LTD' },
+                    user: {
+                        id: randomBytes(16),
+                        name: `watan-${deviceId}`,
+                        displayName: db.settings.companyName || 'WATAN PLS LTD'
+                    },
+                    pubKeyCredParams: [
+                        { type: 'public-key', alg: -7 },
+                        { type: 'public-key', alg: -257 }
+                    ],
+                    timeout: 60000,
+                    attestation: 'none',
+                    authenticatorSelection: {
+                        authenticatorAttachment: 'platform',
+                        residentKey: 'preferred',
+                        userVerification: 'required'
+                    }
+                }
+            });
+            if(!credential) throw new Error('لم يتم إنشاء اعتماد البصمة');
+            const security = ensureSecurityShape();
+            security.biometricCredentials[deviceId] = bytesToBase64Url(credential.rawId);
+            security.biometricEnabled = true;
+            await saveDB();
+            return true;
+        }
+
+        async function saveBiometricSetting() {
+            const checkbox = document.getElementById('set-biometric-enabled');
+            if(!checkbox) return;
+            const security = ensureSecurityShape();
+            const deviceId = getDeviceId();
+            try {
+                if(checkbox.checked) {
+                    updateBiometricSettingsStatus('انتظر تأكيد بصمة الجهاز...');
+                    await registerBiometricCredential();
+                    updateBiometricSettingsStatus('تم تفعيل البصمة على هذا الجهاز وحفظ الإعداد في Firebase.');
+                    showToast('تم تفعيل الدخول بالبصمة');
+                } else {
+                    delete security.biometricCredentials[deviceId];
+                    security.biometricEnabled = Object.keys(security.biometricCredentials).length > 0;
+                    await saveDB();
+                    updateBiometricSettingsStatus('تم إلغاء البصمة من هذا الجهاز.');
+                    showToast('تم إلغاء الدخول بالبصمة من هذا الجهاز');
+                }
+            } catch(error) {
+                console.error('Biometric registration error:', error);
+                checkbox.checked = Boolean(security.biometricCredentials[deviceId]);
+                updateBiometricSettingsStatus(error.message || 'تعذر تفعيل البصمة');
+                showToast(error.message || 'تعذر تفعيل البصمة', 'error');
+            }
+            updateLockBiometricUI();
+        }
+
+        async function authenticateWithBiometric() {
+            const security = ensureSecurityShape();
+            const credentialId = security.biometricCredentials[getDeviceId()];
+            if(!security.biometricEnabled || !credentialId) {
+                showToast('فعّل البصمة أولاً من الإعدادات', 'error');
+                return;
+            }
+            if(!isBiometricContextSupported()) {
+                showToast('البصمة تحتاج رابط HTTPS أو تطبيقاً مثبتاً', 'error');
+                return;
+            }
+            try {
+                const assertion = await navigator.credentials.get({
+                    publicKey: {
+                        challenge: randomBytes(32),
+                        allowCredentials: [{
+                            type: 'public-key',
+                            id: base64UrlToBytes(credentialId)
+                        }],
+                        timeout: 60000,
+                        userVerification: 'required'
+                    }
+                });
+                if(assertion) unlockAppUI();
+            } catch(error) {
+                console.error('Biometric authentication error:', error);
+                showToast('لم يتم التحقق من البصمة', 'error');
+            }
+        }
+
         // ================= PWA INSTALLATION =================
         let deferredInstallPrompt = null;
 
@@ -1163,6 +1349,9 @@ let defaultCurrencies = [
         }
 
         window.addEventListener('load', async () => {
+            setupPinInputs();
+            lockAppUI();
             init();
             await bootstrapFirebase();
+            updateLockBiometricUI();
         });

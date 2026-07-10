@@ -25,6 +25,45 @@
 <body class="flex overflow-hidden h-screen text-gray-800">
     <noscript><div style="position:fixed;inset:0;z-index:99999;background:white;padding:2rem;text-align:center;font-weight:bold">يجب تفعيل JavaScript لتشغيل التطبيق.</div></noscript>
 
+
+    <!-- ================= APP LOCK SCREEN ================= -->
+    <div id="app-lock-screen" class="app-lock-screen">
+        <div class="app-lock-card">
+            <img class="lock-logo-img" src="logo.png" alt="Logo">
+            <h1 class="lock-company-name">WATAN PLS LTD</h1>
+            <p class="lock-subtitle">نظام الصرافة والحوالات</p>
+            <div class="lock-actions">
+                <button type="button" onclick="openPinLoginModal()" class="quick-login-btn">
+                    <i class="fas fa-key"></i>
+                    <span>الدخول السريع</span>
+                </button>
+                <button type="button" id="lock-biometric-btn" onclick="authenticateWithBiometric()" class="biometric-login-btn" aria-label="الدخول بالبصمة">
+                    <i class="fas fa-fingerprint"></i>
+                    <span>البصمة</span>
+                </button>
+            </div>
+            <p id="lock-biometric-hint" class="lock-biometric-hint">يمكن تفعيل البصمة من الإعدادات</p>
+        </div>
+    </div>
+
+    <!-- PIN LOGIN MODAL -->
+    <div id="pin-login-modal" class="pin-login-modal hidden" role="dialog" aria-modal="true" aria-labelledby="pin-login-title">
+        <div class="pin-login-card">
+            <button type="button" onclick="closePinLoginModal()" class="pin-modal-close" aria-label="إغلاق"><i class="fas fa-times"></i></button>
+            <div class="pin-modal-icon"><i class="fas fa-lock"></i></div>
+            <h2 id="pin-login-title">أدخل رمز القفل</h2>
+            <p>الرمز مكوّن من 4 أرقام</p>
+            <div id="pin-inputs" class="pin-inputs" dir="ltr">
+                <input class="pin-digit" type="password" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="الرقم الأول">
+                <input class="pin-digit" type="password" inputmode="numeric" maxlength="1" aria-label="الرقم الثاني">
+                <input class="pin-digit" type="password" inputmode="numeric" maxlength="1" aria-label="الرقم الثالث">
+                <input class="pin-digit" type="password" inputmode="numeric" maxlength="1" aria-label="الرقم الرابع">
+            </div>
+            <p id="pin-login-error" class="pin-login-error hidden">رمز القفل غير صحيح</p>
+            <button type="button" onclick="submitPinLogin()" class="pin-submit-btn">دخول</button>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
 
@@ -39,11 +78,9 @@
 
     <!-- Sidebar -->
     <aside id="sidebar" class="sidebar w-64 text-slate-300 fixed h-full z-40 overflow-y-auto right-0 top-0 pt-16 md:pt-0 pb-12">
-        <div class="hidden md:flex p-6 items-center justify-center bg-slate-900 border-b border-slate-700">
-            <h1 class="text-white text-lg font-black flex items-center gap-3 tracking-wide">
-                <img class="logo-img hidden h-12 w-12 rounded-full object-contain shadow bg-white border border-slate-500" src="" alt="Logo">
-                <span class="pr-company-name">Cash Top</span>
-            </h1>
+        <div class="sidebar-brand flex flex-col items-center justify-center bg-slate-900 border-b border-slate-700 text-center">
+            <img class="logo-img hidden sidebar-brand-logo rounded-full object-contain shadow bg-white border-2 border-slate-500" src="" alt="Logo">
+            <h1 class="pr-company-name sidebar-brand-name text-white font-black tracking-wide">Cash Top</h1>
         </div>
         <div class="bg-yellow-500 text-slate-900 text-center py-3 font-bold text-sm shadow-inner cursor-pointer hover:bg-yellow-400 transition" onclick="switchTab('dashboard')">
             <i class="fas fa-plus-circle"></i> عملية جديدة
@@ -156,7 +193,7 @@
                                     <select id="q-currency" class="w-full h-11 border rounded p-2 dynamic-currencies" onchange="triggerQSync()"></select>
                                 </div>
                                 <div class="flex flex-col justify-end">
-                                    <label class="text-xs text-slate-500 mb-1 block">سعر الصرف (للـ 100)</label>
+                                    <label id="q-rate-label" class="text-xs text-slate-500 mb-1 block">سعر تصريف كل 100 من العملة الأولى مقابل الثانية</label>
                                     <input type="number" step="0.0001" id="q-rate" class="w-full h-11 border rounded p-2 bg-yellow-50 text-center font-bold text-blue-700" oninput="handleQAmount()">
                                 </div>
                             </div>
@@ -167,8 +204,12 @@
                                     <input type="number" step="0.01" id="q-amount" required class="w-full h-11 border border-slate-300 rounded p-2 font-bold text-lg text-center" oninput="handleQAmount()">
                                 </div>
                                 <div>
-                                    <label class="text-xs font-bold text-slate-800 mb-1 block">المكافئ (شيكل) للقبض/الصرف</label>
-                                    <input type="number" step="0.01" id="q-ils" required class="w-full h-11 bg-white border border-slate-300 rounded p-2 font-black text-center text-indigo-900" oninput="handleQIls()">
+                                    <label class="text-xs font-bold text-slate-800 mb-1 block">المكافئ للقبض/الصرف</label>
+                                    <div class="grid grid-cols-3 gap-2">
+                                        <select id="q-equivalent-currency" class="w-full h-11 border rounded p-2 dynamic-equivalent-currencies font-bold" onchange="triggerQEquivalentSync()"></select>
+                                        <input type="number" step="0.01" id="q-ils" required class="col-span-2 w-full h-11 bg-white border border-slate-300 rounded p-2 font-black text-center text-indigo-900" oninput="handleQIls()">
+                                    </div>
+                                    <div id="q-equivalent-rate-note" class="text-[10px] text-slate-500 mt-1 text-center"></div>
                                     
                                     <div class="mt-2 flex items-center justify-start gap-2">
                                         <label class="relative inline-flex items-center cursor-pointer">
@@ -187,7 +228,7 @@
                             <div class="flex flex-col md:flex-row gap-2 pt-4">
                                 <button type="button" class="w-full md:w-1/4 bg-red-600 hover:bg-red-700 text-white rounded font-bold py-3 md:py-2 transition" onclick="cancelQuickForm()"><i class="fas fa-times"></i> إلغاء</button>
                                 <button type="button" onclick="saveQuickOperation(true)" class="w-full md:w-1/4 bg-slate-800 hover:bg-slate-900 text-white rounded font-bold py-3 md:py-2 transition"><i class="fas fa-print"></i> طباعة</button>
-                                <button type="button" onclick="saveQuickOperation(false)" class="w-full md:w-1/2 bg-green-600 hover:bg-green-700 text-white rounded py-3 font-bold transition shadow-lg"><i class="fas fa-save"></i> حفظ العملية</button>
+                                <button type="button" id="quick-save-button" onclick="saveQuickOperation(false)" class="w-full md:w-1/2 bg-green-600 hover:bg-green-700 text-white rounded py-3 font-bold transition shadow-lg"><i class="fas fa-save"></i> حفظ العملية</button>
                             </div>
                         </form>
                     </div>
@@ -241,7 +282,7 @@
                 </div>
             </div>
 
-            <div class="bg-white shadow rounded-lg overflow-x-auto border border-slate-200">
+            <div class="bg-white shadow rounded-lg overflow-x-auto border border-slate-200 report-table-wrap">
                 <table class="w-full text-sm ledger-table" id="reports-table">
                     <thead>
                         <tr>
@@ -254,12 +295,12 @@
                         </tr>
                     </thead>
                     <tbody id="reports-body"></tbody>
-                    <tfoot class="bg-slate-100 font-black text-lg border-t-2 border-black">
+                    <tfoot class="report-total-footer">
                         <tr>
-                            <td colspan="2" class="text-left text-slate-600 p-3">إجماليات الفترة الظاهرة:</td>
-                            <td id="tot-in" class="text-green-700 text-center">0.00</td>
-                            <td id="tot-out" class="text-red-700 text-center">0.00</td>
-                            <td id="tot-diff" class="bg-slate-200 text-center" dir="ltr">0.00</td>
+                            <td colspan="2" class="report-total-footer-label">إجمالي كل الفترات:</td>
+                            <td id="all-tot-in" dir="ltr" class="report-total-in">0.00</td>
+                            <td id="all-tot-out" dir="ltr" class="report-total-out">0.00</td>
+                            <td id="all-tot-diff" dir="ltr" class="report-total-footer-net">0.00</td>
                             <td class="no-print"></td>
                         </tr>
                     </tfoot>
@@ -321,16 +362,20 @@
                                     <select id="tr-currency" class="w-full h-11 border rounded p-2 dynamic-currencies" onchange="triggerTrSync()"></select>
                                 </div>
                                 <div>
-                                    <label class="text-xs text-slate-600 block mb-1">السعر (لكل 100)</label>
-                                    <input type="number" id="tr-rate" class="w-full h-11 border rounded p-2 font-bold text-blue-700 text-center" oninput="handleTrAmount()">
+                                    <label id="tr-rate-label" class="text-xs text-slate-600 block mb-1">سعر تصريف كل 100 من العملة الأولى مقابل الثانية</label>
+                                    <input type="number" step="0.0001" id="tr-rate" class="w-full h-11 border rounded p-2 font-bold text-blue-700 text-center" oninput="handleTrAmount()">
                                 </div>
                                 <div>
                                     <label class="text-xs text-slate-600 block mb-1">مبلغ الحوالة + العمولة</label>
                                     <input type="number" id="tr-amount" required class="w-full h-11 border border-slate-300 rounded p-2 font-bold text-lg text-center" oninput="handleTrAmount()">
                                 </div>
                                 <div class="md:col-span-2 flex flex-col justify-end">
-                                    <label class="text-xs font-bold text-slate-800 block mb-1">المكافئ (شيكل) للقبض/الصرف</label>
-                                    <input type="number" step="0.01" id="tr-ils" required class="w-full h-11 bg-white border border-slate-300 rounded p-2 font-black text-center text-red-700" oninput="handleTrIls()">
+                                    <label class="text-xs font-bold text-slate-800 block mb-1">المكافئ للقبض/الصرف</label>
+                                    <div class="grid grid-cols-3 gap-2">
+                                        <select id="tr-equivalent-currency" class="w-full h-11 border rounded p-2 dynamic-equivalent-currencies font-bold" onchange="triggerTrEquivalentSync()"></select>
+                                        <input type="number" step="0.01" id="tr-ils" required class="col-span-2 w-full h-11 bg-white border border-slate-300 rounded p-2 font-black text-center text-red-700" oninput="handleTrIls()">
+                                    </div>
+                                    <div id="tr-equivalent-rate-note" class="text-[10px] text-slate-500 mt-1 text-center"></div>
                                     
                                     <div class="mt-2 flex items-center justify-start gap-2">
                                         <label class="relative inline-flex items-center cursor-pointer">
@@ -390,16 +435,20 @@
                             <select id="chk-currency" class="w-full h-11 border rounded p-2 dynamic-currencies" onchange="triggerChkSync()"></select>
                         </div>
                         <div class="flex flex-col justify-end">
-                            <label class="block text-sm text-slate-600 mb-1">السعر(للـ 100)</label>
-                            <input type="number" id="chk-rate" class="w-full h-11 border rounded p-2 font-bold text-blue-700 text-center" oninput="handleChkAmount()">
+                            <label id="chk-rate-label" class="block text-sm text-slate-600 mb-1">سعر تصريف كل 100 من العملة الأولى مقابل الثانية</label>
+                            <input type="number" step="0.0001" id="chk-rate" class="w-full h-11 border rounded p-2 font-bold text-blue-700 text-center" oninput="handleChkAmount()">
                         </div>
                         <div class="flex flex-col justify-end">
                             <label class="block text-sm text-slate-600 mb-1">قيمة الشيك</label>
                             <input type="number" id="chk-amount" class="w-full h-11 border rounded p-2 font-bold text-lg text-center" required oninput="handleChkAmount()">
                         </div>
                         <div class="flex flex-col justify-end">
-                            <label class="text-xs font-bold text-slate-800 block mb-1">المكافئ (شيكل)</label>
-                            <input type="number" step="0.01" id="chk-ils" required class="w-full h-11 border rounded p-2 font-black text-center bg-white" oninput="handleChkIls()">
+                            <label class="text-xs font-bold text-slate-800 block mb-1">المكافئ</label>
+                            <div class="grid grid-cols-3 gap-2">
+                                <select id="chk-equivalent-currency" class="w-full h-11 border rounded p-2 dynamic-equivalent-currencies font-bold" onchange="triggerChkEquivalentSync()"></select>
+                                <input type="number" step="0.01" id="chk-ils" required class="col-span-2 w-full h-11 border rounded p-2 font-black text-center bg-white" oninput="handleChkIls()">
+                            </div>
+                            <div id="chk-equivalent-rate-note" class="text-[10px] text-slate-500 mt-1 text-center"></div>
                             
                             <div class="mt-2 flex items-center justify-start gap-2">
                                 <label class="relative inline-flex items-center cursor-pointer">
@@ -500,6 +549,41 @@
                         <button onclick="addCurrency()" class="bg-green-600 text-white px-4 py-3 font-bold rounded w-full"><i class="fas fa-plus"></i> إضافة العملة</button>
                     </div>
                 </div>
+
+
+                <div class="bg-white p-6 rounded shadow md:col-span-2">
+                    <h3 class="font-bold border-b pb-2 mb-4"><i class="fas fa-shield-alt text-blue-600"></i> قفل التطبيق والدخول السريع</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                            <label class="text-sm text-slate-600">رمز القفل الحالي</label>
+                            <input type="password" id="set-current-pin" inputmode="numeric" maxlength="4" class="w-full border rounded p-2 text-center tracking-[0.6em]" placeholder="••••">
+                        </div>
+                        <div>
+                            <label class="text-sm text-slate-600">الرمز الجديد</label>
+                            <input type="password" id="set-new-pin" inputmode="numeric" maxlength="4" class="w-full border rounded p-2 text-center tracking-[0.6em]" placeholder="4 أرقام">
+                        </div>
+                        <div>
+                            <label class="text-sm text-slate-600">تأكيد الرمز الجديد</label>
+                            <input type="password" id="set-confirm-pin" inputmode="numeric" maxlength="4" class="w-full border rounded p-2 text-center tracking-[0.6em]" placeholder="4 أرقام">
+                        </div>
+                    </div>
+                    <button type="button" onclick="changeAppPin()" class="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded font-bold w-full md:w-auto">
+                        <i class="fas fa-key"></i> تغيير رمز القفل
+                    </button>
+
+                    <div class="mt-6 pt-5 border-t flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div>
+                            <label class="flex items-center gap-3 cursor-pointer font-bold text-slate-800">
+                                <input type="checkbox" id="set-biometric-enabled" class="w-5 h-5 accent-blue-600">
+                                <span>تفعيل الدخول بالبصمة على هذا الجهاز</span>
+                            </label>
+                            <p id="biometric-settings-status" class="text-xs text-slate-500 mt-2">سيتم حفظ التفعيل ومعرّف الجهاز في Firebase، بينما تبقى بيانات البصمة داخل الهاتف.</p>
+                        </div>
+                        <button type="button" onclick="saveBiometricSetting()" class="bg-slate-900 hover:bg-black text-white px-5 py-3 rounded font-bold whitespace-nowrap">
+                            <i class="fas fa-fingerprint"></i> حفظ إعداد البصمة
+                        </button>
+                    </div>
+                </div>
             </div>
             <div class="mt-8 text-center"><button onclick="factoryReset()" class="text-red-500 text-sm underline font-bold">تصفير النظام ومسح كافة البيانات بشكل نهائي</button></div>
         </section>
@@ -533,6 +617,13 @@
 
     <!-- ================= HIDDEN PRINT TEMPLATES ================= -->
     <div id="print-wrapper" class="hidden">
+        <div id="print-preview-toolbar" class="print-preview-toolbar no-print">
+            <strong class="print-preview-title">معاينة الوصل</strong>
+            <div class="print-preview-actions">
+                <button type="button" onclick="confirmPrintPreview()" class="print-preview-confirm"><i class="fas fa-print"></i> طباعة الآن</button>
+                <button type="button" onclick="closePrintPreview()" class="print-preview-close"><i class="fas fa-times"></i> إغلاق</button>
+            </div>
+        </div>
         <div id="tmpl-receipt" class="print-container p-8 mx-auto" style="max-width: 800px; border: 4px solid #0f172a; min-height: 800px; position: relative;">
             <div class="flex justify-between items-center mb-6 border-b-2 border-black pb-4">
                 <!-- الشعار كبير ودائري ولطيف أعلى اسم المحل -->

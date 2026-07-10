@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'watan-pwa-v1.2.0';
+const CACHE_VERSION = 'watan-pwa-v2.2.0-security';
 const APP_SHELL = [
   './',
   './index.html',
