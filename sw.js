@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'watan-pwa-v2.2.0-security';
+const CACHE_VERSION = 'watan-pwa-v2.2.4-biometric-transition';
 const APP_SHELL = [
   './',
   './index.html',
@@ -6,6 +6,7 @@ const APP_SHELL = [
   './firebase-config.js',
   './local-db.js',
   './app.js',
+  './lock.js',
   './manifest.webmanifest',
   './logo.png',
   './icon-192.png',

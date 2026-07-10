@@ -1,131 +1,362 @@
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap');
-        body { font-family: 'Cairo', sans-serif; background-color: #f0f2f5; }
-        
-        /* Sidebar */
-        .sidebar { transition: transform 0.3s ease-in-out; background-color: #0f172a; }
-        @media (max-width: 768px) {
-            .sidebar { transform: translateX(100%); }
-            .sidebar.open { transform: translateX(0); }
-            .main-content { margin-right: 0 !important; }
-        }
-        .sidebar-item { border-bottom: 1px solid #1e293b; transition: all 0.2s; }
-        .sidebar-item:hover, .sidebar-item.active { background-color: #1e293b; color: #fbbf24; border-right: 4px solid #fbbf24; }
-        
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #f1f1f1; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-        /* Print & Export Classes */
-        @page { size: A4 portrait; margin: 8mm; }
-        @media print {
-            html, body {
-                width: 100% !important;
-                height: auto !important;
-                min-height: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow: visible !important;
-                background: #fff !important;
-            }
-            body { display: block !important; }
-            body > *:not(#print-wrapper) { display: none !important; }
-            #print-wrapper.print-mode {
-                display: block !important;
-                position: static !important;
-                inset: auto !important;
-                width: 100% !important;
-                height: auto !important;
-                min-height: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                background: #fff !important;
-            }
-            #print-wrapper.print-mode, #print-wrapper.print-mode * { visibility: visible !important; }
-            #print-wrapper.print-mode #tmpl-receipt {
-                display: block !important;
-                position: static !important;
-                width: 190mm !important;
-                max-width: 190mm !important;
-                min-height: 260mm !important;
-                margin: 0 auto !important;
-                padding: 9mm !important;
-                border: 1.2mm solid #0f172a !important;
-                background: #fff !important;
-                box-sizing: border-box !important;
-                break-inside: avoid !important;
-                page-break-inside: avoid !important;
-            }
-            #print-wrapper.print-mode #tmpl-receipt,
-            #print-wrapper.print-mode #tmpl-receipt * {
-                print-color-adjust: exact !important;
-                -webkit-print-color-adjust: exact !important;
-            }
-            .no-print { display: none !important; }
-        }
-        .offscreen-render {
-            position: absolute !important;
-            top: 0 !important;
-            left: -10000px !important;
-            transform: none !important;
-            display: block !important;
-            width: 850px !important;
-            min-height: 1100px !important;
-            background: #fff !important;
-            z-index: -1000 !important;
-            pointer-events: none !important;
-        }
+body { font-family: 'Cairo', sans-serif; background-color: #f0f2f5; }
 
-        /* Tables */
-        .ledger-table th { background-color: #3b82f6; color: white; border: 1px solid #2563eb; padding: 10px; }
-        .ledger-table td { border: 1px solid #cbd5e1; padding: 8px; text-align: center; font-weight: 600; }
-        .ledger-table tr:nth-child(even) { background-color: #f8fafc; }
-        
-        /* Toggle Switch (RTL Friendly) */
-        .toggle-switch {
-            position: relative; width: 36px; height: 20px; background-color: #cbd5e1; border-radius: 999px; transition: 0.3s; cursor: pointer; display: inline-block;
-        }
-        .toggle-switch::after {
-            content: ""; position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; background-color: white; border-radius: 50%; transition: 0.3s;
-        }
-        input:checked + .toggle-switch { background-color: #2563eb; }
-        input:checked + .toggle-switch::after { transform: translateX(-16px); } /* For RTL, negative X moves left */
-        html[dir="ltr"] input:checked + .toggle-switch::after { transform: translateX(16px); right: auto; left: 2px; } /* Fallback LTR */
+/* Sidebar */
+.sidebar { transition: transform 0.3s ease-in-out; background-color: #0f172a; }
+@media (max-width: 768px) {
+    .sidebar { transform: translateX(100%); }
+    .sidebar.open { transform: translateX(0); }
+    .main-content { margin-right: 0 !important; }
+}
+.sidebar-item { border-bottom: 1px solid #1e293b; transition: all 0.2s; }
+.sidebar-item:hover, .sidebar-item.active { background-color: #1e293b; color: #fbbf24; border-right: 4px solid #fbbf24; }
 
-        /* Toasts & Modals */
-        .toast { transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55); }
-        .modal-active { display: flex !important; animation: fadeIn 0.2s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+.sidebar-brand {
+    padding: 1.1rem 0.75rem 1rem;
+    min-height: 128px;
+}
+.sidebar-brand-logo {
+    width: 72px;
+    height: 72px;
+    margin-bottom: 0.55rem;
+}
+.sidebar-brand-name {
+    font-size: 1.05rem;
+    line-height: 1.35;
+    max-width: 220px;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 768px) {
+    .sidebar-brand {
+        padding-top: 0.9rem;
+        min-height: 120px;
+    }
+    .sidebar-brand-logo {
+        width: 64px;
+        height: 64px;
+    }
+}
 
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-/* Receipt label backgrounds must hug their text, including printed/PDF output. */
-.receipt-badge {
-    display: inline-flex !important;
-    width: max-content !important;
-    max-width: 100% !important;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
+/* Print & Export */
+@page { size: A4 portrait; margin: 8mm; }
+@media print {
+    html, body {
+        width: 100% !important;
+        height: auto !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: visible !important;
+        background: #fff !important;
+    }
+    body { display: block !important; }
+    body > *:not(#print-wrapper) { display: none !important; }
+    #print-wrapper.print-mode {
+        display: block !important;
+        position: static !important;
+        inset: auto !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+    }
+    #print-wrapper.print-mode, #print-wrapper.print-mode * { visibility: visible !important; }
+    #print-wrapper.print-mode #tmpl-receipt {
+        display: block !important;
+        position: static !important;
+        width: 190mm !important;
+        max-width: 190mm !important;
+        min-height: 260mm !important;
+        margin: 0 auto !important;
+        padding: 9mm !important;
+        border: 1.2mm solid #0f172a !important;
+        background: #fff !important;
+        box-sizing: border-box !important;
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+        font-family: 'Cairo', sans-serif !important;
+    }
+    #print-wrapper.print-mode #tmpl-receipt,
+    #print-wrapper.print-mode #tmpl-receipt * {
+        print-color-adjust: exact !important;
+        -webkit-print-color-adjust: exact !important;
+    }
+    .no-print { display: none !important; }
+}
+
+.offscreen-render {
+    position: absolute !important;
+    top: 0 !important;
+    left: -10000px !important;
+    transform: none !important;
+    display: block !important;
+    width: 850px !important;
+    min-height: 1100px !important;
+    background: #fff !important;
+    z-index: -1000 !important;
+    pointer-events: none !important;
+}
+
+/* Tables */
+.ledger-table th { background-color: #3b82f6; color: white; border: 1px solid #2563eb; padding: 10px; }
+.ledger-table td { border: 1px solid #cbd5e1; padding: 8px; text-align: center; font-weight: 600; }
+.ledger-table tr:nth-child(even) { background-color: #f8fafc; }
+
+/* Toggle Switch (RTL Friendly) */
+.toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background-color: #cbd5e1;
+    border-radius: 999px;
+    transition: 0.3s;
+    cursor: pointer;
+    display: inline-block;
+}
+.toggle-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    background-color: white;
+    border-radius: 50%;
+    transition: 0.3s;
+}
+input:checked + .toggle-switch { background-color: #2563eb; }
+input:checked + .toggle-switch::after { transform: translateX(-16px); }
+html[dir="ltr"] input:checked + .toggle-switch::after { transform: translateX(16px); right: auto; left: 2px; }
+
+/* Toasts & Modals */
+.toast { transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55); }
+.modal-active { display: flex !important; animation: fadeIn 0.2s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+/* Receipt title / amount helper backgrounds */
+.receipt-title-line,
+.receipt-equivalent-line {
+    text-align: center;
+    width: 100%;
+}
+.receipt-title-line {
+    margin: 0;
+    line-height: 1.1;
+}
+.receipt-equivalent-line {
+    margin: 0.65rem 0 0 0 !important;
+    line-height: 1.1;
+}
+.receipt-title-bg,
+.receipt-equivalent-bg {
+    display: inline-block !important;
+    width: auto !important;
+    max-width: 100%;
     white-space: nowrap;
+    box-sizing: border-box;
     vertical-align: middle;
+    border-radius: 0.45rem;
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
 }
-.receipt-title-badge { padding: 0.18rem 0.55rem !important; line-height: 1.35 !important; }
-.receipt-equivalent-badge { padding: 0.12rem 0.45rem !important; line-height: 1.35 !important; }
+.receipt-title-bg {
+    padding: 0.32rem 0.9rem 0.52rem 0.9rem;
+    transform: translateY(12px);
+    line-height: 1.35;
+}
+.receipt-equivalent-bg {
+    padding: 0.18rem 0.9rem 0.38rem 0.9rem;
+    transform: translateY(12px);
+    line-height: 1.35;
+    background: #ecdf79;
+    color: #465163;
+    min-width: 320px;
+}
+.receipt-title-neutral { background: #e5e7eb; color: #1f2937; }
+.receipt-title-in { background: #bdeecd; color: #085d32; }
+.receipt-title-out { background: #f2c7c7; color: #8f1f1f; }
 
 @media print {
-    .receipt-badge {
-        display: inline-flex !important;
-        width: max-content !important;
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-    }
+    .receipt-title-bg { padding: 0.32rem 0.9rem 0.52rem 0.9rem; transform: translateY(12px); }
+    .receipt-equivalent-bg { padding: 0.18rem 0.9rem 0.38rem 0.9rem; transform: translateY(12px); min-width: 320px; }
 }
 
 /* PWA install entry remains visually identical to the sidebar navigation. */
 #install-app-btn.hidden { display: none !important; }
+
+/* Ledger scrolling and totals footer. */
+.report-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable both-edges;
+}
+#reports-table {
+    min-width: 820px;
+    border-collapse: collapse;
+}
+.report-total-footer tr {
+    background: #f1f5f9 !important;
+    border-top: 2px solid #0f172a;
+}
+.report-total-footer td {
+    padding: 0.8rem 0.65rem !important;
+    color: #0f172a;
+    border: 1px solid #cbd5e1 !important;
+    font-weight: 900 !important;
+    font-size: 1rem;
+    white-space: nowrap;
+}
+.report-total-footer-label {
+    text-align: left !important;
+    color: #475569 !important;
+}
+.report-total-footer-net {
+    font-size: 1.12rem !important;
+    background: #e2e8f0 !important;
+}
+
+
+.report-total-in { color: #15803d !important; }
+.report-total-out { color: #dc2626 !important; }
+
+/* Receipt preview before printing. */
+body.print-preview-open {
+    overflow: hidden !important;
+}
+#print-wrapper.print-preview-mode {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 2147483645 !important;
+    overflow: auto !important;
+    padding: 78px 16px 28px !important;
+    background: #dfe3e8 !important;
+    box-sizing: border-box !important;
+}
+#print-wrapper.print-preview-mode #tmpl-receipt {
+    display: block !important;
+    width: min(800px, calc(100vw - 24px)) !important;
+    max-width: 800px !important;
+    min-height: 800px !important;
+    margin: 0 auto !important;
+    background: #ffffff !important;
+    box-sizing: border-box !important;
+    box-shadow: 0 12px 34px rgba(15, 23, 42, 0.22);
+}
+.print-preview-toolbar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 2147483646;
+    min-height: 62px;
+    padding: 10px 16px;
+    background: #0f172a;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    box-shadow: 0 3px 12px rgba(0,0,0,.22);
+}
+.print-preview-title {
+    font-size: 1rem;
+    font-weight: 900;
+}
+.print-preview-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.print-preview-confirm,
+.print-preview-close {
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 14px;
+    font-family: 'Cairo', sans-serif;
+    font-weight: 900;
+    cursor: pointer;
+}
+.print-preview-confirm { background: #16a34a; color: #ffffff; }
+.print-preview-close { background: #e2e8f0; color: #0f172a; }
+
+/* Stored ILS amount shown below each immutable USD ledger value. */
+.ledger-ils-subvalue {
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.25;
+    font-weight: 700;
+    color: #64748b;
+    white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+    .print-preview-toolbar {
+        align-items: stretch;
+    }
+    .print-preview-title {
+        display: none;
+    }
+    .print-preview-actions {
+        width: 100%;
+    }
+    .print-preview-confirm,
+    .print-preview-close {
+        flex: 1;
+    }
+}
+
+@media print {
+    #print-wrapper.print-preview-mode {
+        display: block !important;
+        position: static !important;
+        inset: auto !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 0 !important;
+        overflow: visible !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        background: #ffffff !important;
+    }
+    #print-wrapper.print-preview-mode #tmpl-receipt {
+        display: block !important;
+        position: static !important;
+        width: 190mm !important;
+        max-width: 190mm !important;
+        min-height: 260mm !important;
+        margin: 0 auto !important;
+        padding: 9mm !important;
+        border: 1.2mm solid #0f172a !important;
+        background: #ffffff !important;
+        box-shadow: none !important;
+        box-sizing: border-box !important;
+    }
+    .print-preview-toolbar {
+        display: none !important;
+    }
+}
+
+@media print {
+    body.print-preview-open {
+        overflow: visible !important;
+        height: auto !important;
+        min-height: 0 !important;
+    }
+}
 
 /* ================= APP LOCK & BIOMETRIC ================= */
 .app-lock-screen {
@@ -272,4 +503,48 @@ body.app-is-locked { overflow: hidden !important; }
 @media print {
     .app-lock-screen,
     .pin-login-modal { display: none !important; }
+}
+
+/* Small biometric success transition shown after fingerprint verification. */
+.app-lock-card { position: relative; }
+.biometric-unlock-loader {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: inherit;
+    background: rgba(7, 17, 31, .38);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .22s ease, visibility .22s ease;
+}
+.biometric-unlock-loader.is-visible {
+    opacity: 1;
+    visibility: visible;
+}
+.biometric-unlock-spinner {
+    width: 34px;
+    height: 34px;
+    border: 4px solid rgba(255,255,255,.32);
+    border-top-color: #fbbf24;
+    border-radius: 50%;
+    animation: biometric-unlock-spin .68s linear infinite;
+    box-shadow: 0 0 0 6px rgba(255,255,255,.06);
+}
+.app-lock-screen.biometric-unlock-transition .app-lock-card {
+    transform: scale(.985);
+    transition: transform .25s ease;
+}
+.app-lock-screen.biometric-unlock-transition.unlocked {
+    opacity: 0;
+    transition: opacity .28s ease;
+}
+@keyframes biometric-unlock-spin {
+    to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .biometric-unlock-spinner { animation-duration: 1.4s; }
 }

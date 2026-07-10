@@ -26,21 +26,44 @@ let defaultCurrencies = [
         let editingQuickId = null;
         let editingTransferId = null;
         let editingCheckId = null;
+        const saveLocks = { quick: false, transfer: false, check: false };
+        let snapshotMigrationInProgress = false;
+        const DATA_RESET_VERSION = 'movement-sequence-reset-2026-07-10-v2';
+        const LOCAL_RESET_MARKER_KEY = `${LOCAL_DB_KEY}:dataResetVersion`;
+        const MARKET_RATES_CACHE_KEY = `${LOCAL_DB_KEY}:marketRates:v1`;
+        const MARKET_RATES_MAX_AGE = 24 * 60 * 60 * 1000;
+        let globalMarketRates = {};
+        let globalMarketRatesUpdatedAt = 0;
+        let globalMarketRatesLoading = false;
+
+        function setFormSaving(formId, active) {
+            const form = document.getElementById(formId);
+            if(!form) return;
+            form.querySelectorAll('button').forEach(button => {
+                button.disabled = active;
+                button.classList.toggle('opacity-60', active);
+                button.classList.toggle('cursor-not-allowed', active);
+            });
+        }
+
+        async function runSaveOnce(kind, formId, task) {
+            if(saveLocks[kind]) {
+                showToast('جاري حفظ العملية، انتظر لحظة', 'error');
+                return;
+            }
+            saveLocks[kind] = true;
+            setFormSaving(formId, true);
+            try {
+                await task();
+            } finally {
+                saveLocks[kind] = false;
+                setFormSaving(formId, false);
+            }
+        }
 
         function defaultDatabase() {
             return {
-                settings: {
-                    companyName: "WATAN PLS LTD",
-                    phone: "+970567406000",
-                    address: "فلسطين",
-                    currencies: defaultCurrencies.map(c => ({...c})),
-                    logo: "",
-                    security: {
-                        pinHash: "",
-                        biometricEnabled: false,
-                        biometricCredentials: {}
-                    }
-                },
+                settings: { companyName: "WATAN PLS LTD", phone: "+970567406000", address: "فلسطين", currencies: defaultCurrencies.map(c => ({...c})), logo: DEFAULT_LOGO_FILE, dataResetVersion: DATA_RESET_VERSION, lastMovementNumber: 0 },
                 ledger: [],
                 clients: []
             };
@@ -72,28 +95,21 @@ let defaultCurrencies = [
                 amount: Number(t.amount) || 0,
                 totalIls: Number(t.totalIls) || 0,
                 totalUsd: t.totalUsd === undefined ? undefined : Number(t.totalUsd) || 0,
-                rate: t.rate === undefined ? undefined : Number(t.rate) || 0
+                totalUsdSnapshot: t.totalUsdSnapshot === undefined ? undefined : Number(t.totalUsdSnapshot) || 0,
+                rate: t.rate === undefined ? undefined : Number(t.rate) || 0,
+                currencyRateAtSave: t.currencyRateAtSave === undefined ? undefined : Number(t.currencyRateAtSave) || 0,
+                equivalentCurrency: String(t.equivalentCurrency || 'ILS').toUpperCase(),
+                equivalentAmount: t.equivalentAmount === undefined ? undefined : Number(t.equivalentAmount) || 0,
+                equivalentRateAtSave: t.equivalentRateAtSave === undefined ? undefined : Number(t.equivalentRateAtSave) || 0,
+                pairRateAtSave: t.pairRateAtSave === undefined ? undefined : Number(t.pairRateAtSave) || 0,
+                financialVersion: Number(t.financialVersion) || 0
             }));
             const clients = collectionToArray(source.clients).map(c => ({
                 ...c,
                 id: Number.isFinite(Number(c.id)) ? Number(c.id) : c.id
             }));
-            const rawSecurity = rawSettings.security && typeof rawSettings.security === 'object' ? rawSettings.security : {};
-            const biometricCredentials = rawSecurity.biometricCredentials && typeof rawSecurity.biometricCredentials === 'object'
-                ? rawSecurity.biometricCredentials
-                : {};
             return {
-                settings: {
-                    ...base.settings,
-                    ...rawSettings,
-                    currencies: currencies.length ? currencies : base.settings.currencies,
-                    logo: /^data:image\//i.test(String(rawSettings.logo || '')) ? '' : String(rawSettings.logo || ''),
-                    security: {
-                        ...base.settings.security,
-                        ...rawSecurity,
-                        biometricCredentials
-                    }
-                },
+                settings: { ...base.settings, ...rawSettings, currencies: currencies.length ? currencies : base.settings.currencies, logo: /^data:image\//i.test(String(rawSettings.logo || '')) ? '' : String(rawSettings.logo || ''), dataResetVersion: String(rawSettings.dataResetVersion || ''), lastMovementNumber: Number(rawSettings.lastMovementNumber) || 0 },
                 ledger,
                 clients
             };
@@ -108,6 +124,28 @@ let defaultCurrencies = [
 
         function saveLocalOnly() {
             localStorage.setItem(LOCAL_DB_KEY, JSON.stringify(db));
+        }
+
+        function resetLocalDataForRequiredVersion() {
+            const marker = localStorage.getItem(LOCAL_RESET_MARKER_KEY);
+            if(marker === DATA_RESET_VERSION && db.settings?.dataResetVersion === DATA_RESET_VERSION) return false;
+            const preservedSettings = { ...(db.settings || {}) };
+            db = {
+                settings: {
+                    ...defaultDatabase().settings,
+                    ...preservedSettings,
+                    dataResetVersion: DATA_RESET_VERSION,
+                    lastMovementNumber: 0
+                },
+                ledger: [],
+                clients: []
+            };
+            localStorage.setItem(LOCAL_RESET_MARKER_KEY, DATA_RESET_VERSION);
+            saveLocalOnly();
+            if(window.WatanLocalDB?.set) {
+                window.WatanLocalDB.set(db).catch(error => console.error('IndexedDB reset error:', error));
+            }
+            return true;
         }
 
         function sanitizeForFirebase(value) {
@@ -179,18 +217,41 @@ let defaultCurrencies = [
                     if(!remote) {
                         if(!remoteInitialized) {
                             remoteInitialized = true;
-                            await ensureSecurityInitialized({ save: false });
                             await saveDB({silent: true});
                         }
-                        updateLockBiometricUI();
+                        return;
+                    }
+                    const remoteResetVersion = String(remote?.settings?.dataResetVersion || '');
+                    if(remoteResetVersion !== DATA_RESET_VERSION) {
+                        remoteInitialized = true;
+                        const remoteSettings = remote?.settings && typeof remote.settings === 'object' ? remote.settings : {};
+                        const localIsCurrent = db.settings?.dataResetVersion === DATA_RESET_VERSION;
+                        const localLedger = localIsCurrent ? [...(db.ledger || [])] : [];
+                        const localClients = localIsCurrent ? [...(db.clients || [])] : [];
+                        const localLastMovement = localLedger.reduce((max, row) => Math.max(max, getMovementNumber(row)), 0);
+                        db = {
+                            settings: {
+                                ...defaultDatabase().settings,
+                                ...remoteSettings,
+                                ...(localIsCurrent ? db.settings : {}),
+                                dataResetVersion: DATA_RESET_VERSION,
+                                lastMovementNumber: localLastMovement
+                            },
+                            ledger: localLedger,
+                            clients: localClients
+                        };
+                        localStorage.setItem(LOCAL_RESET_MARKER_KEY, DATA_RESET_VERSION);
+                        saveLocalOnly();
+                        await firebaseRootRef.set(firebasePayload());
+                        refreshSyncedViews();
+                        showToast('تم حذف البيانات القديمة وبدء الترقيم من 0001');
                         return;
                     }
                     remoteInitialized = true;
                     db = normalizeDatabase(remote);
                     saveLocalOnly();
+                    localStorage.setItem(LOCAL_RESET_MARKER_KEY, DATA_RESET_VERSION);
                     refreshSyncedViews();
-                    await ensureSecurityInitialized({ save: true });
-                    updateLockBiometricUI();
                 }, error => {
                     console.error('Firebase listener error:', error);
                     showToast('تعذر قراءة البيانات من فايربيز؛ تحقق من قواعد قاعدة البيانات', 'error');
@@ -201,15 +262,104 @@ let defaultCurrencies = [
             }
         }
 
-        function getUsdRate() { return (db.settings.currencies.find(c => c.code === 'USD') || {}).rate || 365; }
-        function getUsdEquivalent(ilsAmount) { return Number(ilsAmount || 0) / (getUsdRate() / 100); }
+        function getCurrencyRate(code, fallback = 100) {
+            const normalized = String(code || '').toUpperCase();
+            const configured = Number((db.settings.currencies.find(c => String(c.code).toUpperCase() === normalized) || {}).rate);
+            return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+        }
+
+        function getUsdRate() { return getCurrencyRate('USD', 365); }
+        function getUsdEquivalent(ilsAmount, usdRate = getUsdRate()) {
+            return Number(usdRate) > 0 ? Number(ilsAmount || 0) / (Number(usdRate) / 100) : 0;
+        }
+
+        function roundLedgerMoney(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.round((number + Number.EPSILON) * 100) / 100 : 0;
+        }
+
+        function getDefaultPairRate(sourceCurrency, equivalentCurrency) {
+            const sourceRate = getCurrencyRate(sourceCurrency);
+            const targetRate = getCurrencyRate(equivalentCurrency);
+            return targetRate > 0 ? (sourceRate / targetRate) * 100 : 0;
+        }
+
+        function createFinancialSnapshot(currency, amount, equivalentCurrency, equivalentAmount, pairRate, equivalentRate) {
+            const sourceCode = String(currency || 'USD').toUpperCase();
+            const targetCode = String(equivalentCurrency || 'ILS').toUpperCase();
+            const amountNumber = Number(amount) || 0;
+            const equivalentNumber = Number(equivalentAmount) || 0;
+
+            // أسعار الإعدادات ثابتة بصيغة: كل 100 من العملة = كم شيكل.
+            // أما حقل السعر داخل العملية فهو سعر الزوج: كل 100 من العملة الأولى = كم من العملة الثانية.
+            const sourceRateAtSave = getCurrencyRate(sourceCode);
+            const targetRateAtSave = Number(equivalentRate) > 0 ? Number(equivalentRate) : getCurrencyRate(targetCode);
+            const usdRateAtSave = getUsdRate();
+            const resolvedPairRate = Number(pairRate) > 0
+                ? Number(pairRate)
+                : (amountNumber > 0 ? (equivalentNumber / amountNumber) * 100 : getDefaultPairRate(sourceCode, targetCode));
+
+            // قيمة السجل بالدولار تعتمد دائماً على المبلغ الأساسي (العملة الأولى)،
+            // وليست على مبلغ العملة المقابلة. مثال: 100 USD مقابل 98 USDT تُسجل 100 USD.
+            const sourceValueIls = amountNumber * (sourceRateAtSave / 100);
+            const totalUsd = usdRateAtSave > 0 ? sourceValueIls / (usdRateAtSave / 100) : 0;
+
+            return {
+                totalUsd: roundLedgerMoney(totalUsd),
+                totalUsdSnapshot: roundLedgerMoney(totalUsd),
+                totalIls: roundLedgerMoney(sourceValueIls),
+                usdRateAtSave: Number(usdRateAtSave),
+                currencyRateAtSave: Number(sourceRateAtSave),
+                equivalentCurrency: targetCode,
+                equivalentAmount: roundLedgerMoney(equivalentNumber),
+                equivalentRateAtSave: Number(targetRateAtSave),
+                pairRateAtSave: Number(resolvedPairRate),
+                sourceAmountAtSave: roundLedgerMoney(amountNumber),
+                financialBasis: 'source',
+                financialVersion: 2
+            };
+        }
+
+        function getMovementNumber(row) {
+            const explicit = Number(row?.movementNumber);
+            if(Number.isFinite(explicit) && explicit > 0) return explicit;
+            const parsed = parseInt(String(row?.ref || '').replace(/\D/g, ''), 10);
+            return Number.isFinite(parsed) ? parsed : 0;
+        }
+
+        function getLastMovementNumber() {
+            const stored = Number(db.settings?.lastMovementNumber) || 0;
+            const ledgerMax = (db.ledger || []).reduce((max, row) => Math.max(max, getMovementNumber(row)), 0);
+            return Math.max(stored, ledgerMax);
+        }
 
         function generateRefNum() {
-            const maxRef = db.ledger.reduce((max, row) => {
-                const value = parseInt(String(row.ref || '').replace(/\D/g, ''), 10);
-                return Number.isFinite(value) ? Math.max(max, value) : max;
-            }, 0);
-            return String(maxRef + 1).padStart(4, '0');
+            return String(getLastMovementNumber() + 1).padStart(4, '0');
+        }
+
+        async function reserveMovementReference(existing) {
+            if(existing) {
+                const movementNumber = getMovementNumber(existing);
+                return { ref: String(existing.ref || String(movementNumber).padStart(4, '0')), movementNumber };
+            }
+
+            let movementNumber = getLastMovementNumber() + 1;
+            if(firebaseRootRef && firebaseConnected) {
+                try {
+                    const counterRef = firebaseRootRef.child('settings/lastMovementNumber');
+                    const transaction = await counterRef.transaction(current => {
+                        const remoteCurrent = Number(current) || 0;
+                        const localCurrent = getLastMovementNumber();
+                        return Math.max(remoteCurrent, localCurrent) + 1;
+                    });
+                    if(transaction.committed) movementNumber = Number(transaction.snapshot.val()) || movementNumber;
+                } catch(error) {
+                    console.error('Movement sequence transaction error:', error);
+                }
+            }
+
+            db.settings.lastMovementNumber = Math.max(Number(db.settings.lastMovementNumber) || 0, movementNumber);
+            return { ref: String(movementNumber).padStart(4, '0'), movementNumber };
         }
 
         let activeFilterType = 'all', customStartDate = '', customEndDate = '';
@@ -240,39 +390,78 @@ let defaultCurrencies = [
                 };
             });
             document.querySelectorAll('.logo-img-placeholder').forEach(div => div.classList.add('hidden'));
-
-            const lockName = document.querySelector('.lock-company-name');
-            if(lockName) lockName.innerText = db.settings.companyName || 'WATAN PLS LTD';
-            const lockLogo = document.querySelector('.lock-logo-img');
-            if(lockLogo) {
-                lockLogo.src = logoUrl;
-                lockLogo.onerror = function() {
-                    if(this.dataset.fallbackApplied === '1') return;
-                    this.dataset.fallbackApplied = '1';
-                    this.src = DEFAULT_LOGO_FILE;
-                };
-            }
-
-            const security = ensureSecurityShape();
-            const biometricCheckbox = document.getElementById('set-biometric-enabled');
-            if(biometricCheckbox) {
-                biometricCheckbox.checked = Boolean(security.biometricEnabled && security.biometricCredentials[getDeviceId()]);
-            }
-            updateBiometricSettingsStatus();
-            updateLockBiometricUI();
         }
 
         function normalizeLedgerFinancials() {
+            let changed = false;
+            const fallbackUsdRate = getUsdRate();
             db.ledger = (db.ledger || []).map(row => {
-                const totalIls = Number(row.totalIls) || 0;
-                const savedUsd = Number(row.totalUsd);
+                const amount = Number(row.amount) || 0;
+                const sourceCurrency = String(row.currency || 'USD').toUpperCase();
+                const equivalentCurrency = String(row.equivalentCurrency || 'ILS').toUpperCase();
+
+                // في النسخ القديمة كان row.rate هو سعر العملة مقابل الشيكل.
+                // في النسخة الجديدة row.rate هو سعر الزوج، لذلك نعتمد لقطة العملة الأساسية أولاً.
+                const sourceRateAtSave = Number(row.currencyRateAtSave)
+                    || (Number(row.financialVersion) >= 2 ? getCurrencyRate(sourceCurrency) : Number(row.rate))
+                    || getCurrencyRate(sourceCurrency);
+                const equivalentRateAtSave = Number(row.equivalentRateAtSave) || getCurrencyRate(equivalentCurrency);
+                const usdRateAtSave = Number(row.usdRateAtSave) || fallbackUsdRate;
+
+                let equivalentAmount = Number(row.equivalentAmount);
+                if(!Number.isFinite(equivalentAmount)) {
+                    const legacyTotalIls = Number(row.totalIls) || 0;
+                    equivalentAmount = equivalentCurrency === 'ILS'
+                        ? legacyTotalIls
+                        : (equivalentRateAtSave > 0 ? legacyTotalIls / (equivalentRateAtSave / 100) : 0);
+                    changed = true;
+                }
+
+                let pairRateAtSave = Number(row.pairRateAtSave);
+                if(!Number.isFinite(pairRateAtSave) || pairRateAtSave <= 0) {
+                    pairRateAtSave = amount > 0
+                        ? (equivalentAmount / amount) * 100
+                        : getDefaultPairRate(sourceCurrency, equivalentCurrency);
+                    changed = true;
+                }
+
+                const sourceValueIls = amount * (sourceRateAtSave / 100);
+                const sourceBasedUsd = usdRateAtSave > 0 ? sourceValueIls / (usdRateAtSave / 100) : 0;
+                const storedUsd = Number(row.totalUsdSnapshot ?? row.totalUsd);
+                const isSourceSnapshot = row.financialBasis === 'source' && Number(row.financialVersion) >= 2;
+                const totalUsd = isSourceSnapshot && Number.isFinite(storedUsd) ? storedUsd : sourceBasedUsd;
+
+                if(!isSourceSnapshot || row.pairRateAtSave === undefined || row.totalUsdSnapshot === undefined) changed = true;
+
                 return {
                     ...row,
-                    amount: Number(row.amount) || 0,
-                    totalIls,
-                    totalUsd: Number.isFinite(savedUsd) ? savedUsd : getUsdEquivalent(totalIls)
+                    amount,
+                    rate: Number(pairRateAtSave),
+                    totalIls: roundLedgerMoney(sourceValueIls),
+                    totalUsd: roundLedgerMoney(totalUsd),
+                    totalUsdSnapshot: roundLedgerMoney(totalUsd),
+                    usdRateAtSave: Number(usdRateAtSave),
+                    currencyRateAtSave: Number(sourceRateAtSave),
+                    equivalentCurrency,
+                    equivalentAmount: roundLedgerMoney(equivalentAmount),
+                    equivalentRateAtSave: Number(equivalentRateAtSave),
+                    pairRateAtSave: Number(pairRateAtSave),
+                    sourceAmountAtSave: Number(row.sourceAmountAtSave ?? amount) || 0,
+                    financialBasis: 'source',
+                    financialVersion: 2
                 };
             });
+            if(changed) {
+                saveLocalOnly();
+                if(firebaseRootRef && remoteInitialized && !snapshotMigrationInProgress) {
+                    snapshotMigrationInProgress = true;
+                    setTimeout(async () => {
+                        try { await saveDB({ silent: true }); }
+                        finally { snapshotMigrationInProgress = false; }
+                    }, 0);
+                }
+            }
+            return changed;
         }
 
         function recalculateFinancialViews() {
@@ -297,7 +486,8 @@ let defaultCurrencies = [
             if(!document.getElementById('filter-start').value) document.getElementById('filter-start').value = today;
             if(!document.getElementById('filter-end').value) document.getElementById('filter-end').value = today;
             if(!editingQuickId) document.getElementById('q-ref').value = generateRefNum();
-            if(!editingTransferId) document.getElementById('tr-ref').value = 'TR-' + generateRefNum();
+            if(!editingTransferId) document.getElementById('tr-ref').value = generateRefNum();
+            if(!editingCheckId && document.getElementById('chk-ref')) document.getElementById('chk-ref').value = generateRefNum();
             triggerQSync(); triggerTrSync(); triggerChkSync();
         }
 
@@ -318,15 +508,24 @@ let defaultCurrencies = [
         }
 
         function populateCurrencies() {
-            const selects = document.querySelectorAll('.dynamic-currencies');
-            const selected = new Map(Array.from(selects).map(s => [s.id, s.value]));
+            const selects = document.querySelectorAll('.dynamic-currencies, .dynamic-equivalent-currencies');
+            const selected = new Map(Array.from(selects).map(select => [select.id, select.value]));
             let optionsHtml = '';
-            db.settings.currencies.forEach(c => { optionsHtml += `<option value="${c.code}" data-rate="${c.rate}">${c.code} - ${c.name}</option>`; });
-            selects.forEach(s => {
-                s.innerHTML = optionsHtml;
-                const previous = selected.get(s.id);
-                if(previous && Array.from(s.options).some(option => option.value === previous)) s.value = previous;
+            db.settings.currencies.forEach(currency => {
+                optionsHtml += `<option value="${currency.code}" data-rate="${currency.rate}">${currency.code} - ${currency.name}</option>`;
             });
+            selects.forEach(select => {
+                select.innerHTML = optionsHtml;
+                const previous = selected.get(select.id);
+                const hasPrevious = previous && Array.from(select.options).some(option => option.value === previous);
+                if(hasPrevious) {
+                    select.value = previous;
+                } else if(select.classList.contains('dynamic-equivalent-currencies')) {
+                    const hasIls = Array.from(select.options).some(option => option.value === 'ILS');
+                    if(hasIls) select.value = 'ILS';
+                }
+            });
+            ['q', 'tr', 'chk'].forEach(updateEquivalentRateNote);
         }
 
         // ================= MODAL & FILTER LOGIC =================
@@ -369,17 +568,98 @@ let defaultCurrencies = [
         }
 
         // ================= SYNC & CALCULATIONS =================
-        function triggerQSync() { const sel = document.getElementById('q-currency'); const rate = parseFloat(sel.options[sel.selectedIndex]?.dataset.rate) || 100; document.getElementById('q-rate').value = rate; handleQAmount(); }
-        function handleQAmount() { if(document.getElementById('q-sync').checked) { const amt = parseFloat(document.getElementById('q-amount').value) || 0; const rate = parseFloat(document.getElementById('q-rate').value) || 100; document.getElementById('q-ils').value = (amt * (rate / 100)).toFixed(2); } }
-        function handleQIls() { if(document.getElementById('q-sync').checked) { const ils = parseFloat(document.getElementById('q-ils').value) || 0; const rate = parseFloat(document.getElementById('q-rate').value) || 100; document.getElementById('q-amount').value = rate ? (ils / (rate / 100)).toFixed(2) : 0; } }
+        function getConversionElements(prefix) {
+            return {
+                sourceCurrency: document.getElementById(`${prefix}-currency`),
+                pairRate: document.getElementById(`${prefix}-rate`),
+                rateLabel: document.getElementById(`${prefix}-rate-label`),
+                sourceAmount: document.getElementById(`${prefix}-amount`),
+                equivalentCurrency: document.getElementById(`${prefix}-equivalent-currency`),
+                equivalentAmount: document.getElementById(`${prefix}-ils`),
+                sync: document.getElementById(`${prefix}-sync`),
+                note: document.getElementById(`${prefix}-equivalent-rate-note`)
+            };
+        }
 
-        function triggerTrSync() { const sel = document.getElementById('tr-currency'); const rate = parseFloat(sel.options[sel.selectedIndex]?.dataset.rate) || 100; document.getElementById('tr-rate').value = rate; handleTrAmount(); }
-        function handleTrAmount() { if(document.getElementById('tr-sync').checked) { const amt = parseFloat(document.getElementById('tr-amount').value) || 0; const rate = parseFloat(document.getElementById('tr-rate').value) || 100; document.getElementById('tr-ils').value = (amt * (rate / 100)).toFixed(2); } }
-        function handleTrIls() { if(document.getElementById('tr-sync').checked) { const ils = parseFloat(document.getElementById('tr-ils').value) || 0; const rate = parseFloat(document.getElementById('tr-rate').value) || 100; document.getElementById('tr-amount').value = rate ? (ils / (rate / 100)).toFixed(2) : 0; } }
+        function getPairRateForElements(elements) {
+            const entered = Number(elements.pairRate?.value);
+            if(Number.isFinite(entered) && entered >= 0) return entered;
+            return getDefaultPairRate(elements.sourceCurrency?.value, elements.equivalentCurrency?.value);
+        }
 
-        function triggerChkSync() { const sel = document.getElementById('chk-currency'); const rate = parseFloat(sel.options[sel.selectedIndex]?.dataset.rate) || 100; document.getElementById('chk-rate').value = rate; handleChkAmount(); }
-        function handleChkAmount() { if(document.getElementById('chk-sync').checked) { const amt = parseFloat(document.getElementById('chk-amount').value) || 0; const rate = parseFloat(document.getElementById('chk-rate').value) || 100; document.getElementById('chk-ils').value = (amt * (rate / 100)).toFixed(2); } }
-        function handleChkIls() { if(document.getElementById('chk-sync').checked) { const ils = parseFloat(document.getElementById('chk-ils').value) || 0; const rate = parseFloat(document.getElementById('chk-rate').value) || 100; document.getElementById('chk-amount').value = rate ? (ils / (rate / 100)).toFixed(2) : 0; } }
+        function updateEquivalentRateNote(prefix) {
+            const elements = getConversionElements(prefix);
+            const sourceCode = String(elements.sourceCurrency?.value || 'USD').toUpperCase();
+            const targetCode = String(elements.equivalentCurrency?.value || 'ILS').toUpperCase();
+            const pairRate = getPairRateForElements(elements);
+            if(elements.rateLabel) elements.rateLabel.textContent = `سعر تصريف كل 100 ${sourceCode} مقابل ${targetCode}`;
+            if(elements.note) elements.note.textContent = `كل 100 ${sourceCode} = ${Number(pairRate).toFixed(4)} ${targetCode}`;
+        }
+
+        function resetPairRateFromCurrencies(prefix) {
+            const elements = getConversionElements(prefix);
+            if(!elements.pairRate) return;
+            const pairRate = getDefaultPairRate(elements.sourceCurrency?.value, elements.equivalentCurrency?.value);
+            elements.pairRate.value = Number(pairRate).toFixed(4);
+            updateEquivalentRateNote(prefix);
+            if(!elements.sync || elements.sync.checked) syncSourceToEquivalent(prefix);
+        }
+
+        function syncSourceToEquivalent(prefix) {
+            const elements = getConversionElements(prefix);
+            if(!elements.sourceAmount || !elements.pairRate || !elements.equivalentAmount) return;
+            const sourceAmount = Number(elements.sourceAmount.value) || 0;
+            const pairRate = getPairRateForElements(elements);
+            const equivalentAmount = sourceAmount * (pairRate / 100);
+            elements.equivalentAmount.value = equivalentAmount.toFixed(2);
+            updateEquivalentRateNote(prefix);
+        }
+
+        function syncEquivalentToPairRate(prefix) {
+            const elements = getConversionElements(prefix);
+            if(!elements.sourceAmount || !elements.pairRate || !elements.equivalentAmount) return;
+            const sourceAmount = Number(elements.sourceAmount.value) || 0;
+            const equivalentAmount = Number(elements.equivalentAmount.value) || 0;
+            const pairRate = sourceAmount > 0 ? (equivalentAmount / sourceAmount) * 100 : 0;
+            elements.pairRate.value = pairRate.toFixed(4);
+            updateEquivalentRateNote(prefix);
+        }
+
+        function triggerSourceCurrency(prefix) {
+            resetPairRateFromCurrencies(prefix);
+        }
+
+        function triggerEquivalentCurrency(prefix) {
+            resetPairRateFromCurrencies(prefix);
+        }
+
+        function handleSourceAmount(prefix) {
+            const elements = getConversionElements(prefix);
+            if(!elements.sync || elements.sync.checked) syncSourceToEquivalent(prefix);
+            else updateEquivalentRateNote(prefix);
+        }
+
+        function handleEquivalentAmount(prefix) {
+            const elements = getConversionElements(prefix);
+            // تعديل المبلغ المقابل لا يغير المبلغ الأساسي؛ يغيّر سعر الزوج فقط.
+            if(!elements.sync || elements.sync.checked) syncEquivalentToPairRate(prefix);
+            else updateEquivalentRateNote(prefix);
+        }
+
+        function triggerQSync() { triggerSourceCurrency('q'); }
+        function handleQAmount() { handleSourceAmount('q'); }
+        function handleQIls() { handleEquivalentAmount('q'); }
+        function triggerQEquivalentSync() { triggerEquivalentCurrency('q'); }
+
+        function triggerTrSync() { triggerSourceCurrency('tr'); }
+        function handleTrAmount() { handleSourceAmount('tr'); }
+        function handleTrIls() { handleEquivalentAmount('tr'); }
+        function triggerTrEquivalentSync() { triggerEquivalentCurrency('tr'); }
+
+        function triggerChkSync() { triggerSourceCurrency('chk'); }
+        function handleChkAmount() { handleSourceAmount('chk'); }
+        function handleChkIls() { handleEquivalentAmount('chk'); }
+        function triggerChkEquivalentSync() { triggerEquivalentCurrency('chk'); }
 
         // ================= SAVE OPERATIONS =================
         function cancelQuickForm() {
@@ -390,7 +670,7 @@ let defaultCurrencies = [
 
         function updateQuickFormColors() {
             const type = document.getElementById('q-type').value;
-            const btn = document.querySelector('#quick-form button.bg-green-600, #quick-form button.bg-red-600');
+            const btn = document.getElementById('quick-save-button');
             if(btn) {
                 if(type === 'in') { btn.classList.replace('bg-red-600', 'bg-green-600'); btn.classList.replace('hover:bg-red-700', 'hover:bg-green-700'); }
                 else { btn.classList.replace('bg-green-600', 'bg-red-600'); btn.classList.replace('hover:bg-green-700', 'hover:bg-red-700'); }
@@ -398,103 +678,153 @@ let defaultCurrencies = [
         }
 
         async function saveQuickOperation(isPrint) {
-            const form = document.getElementById('quick-form');
-            if(!form.checkValidity()) { form.reportValidity(); return; }
-            const ilsValue = parseFloat(document.getElementById('q-ils').value) || 0;
-            const existingIndex = editingQuickId === null ? -1 : db.ledger.findIndex(x => x.id === editingQuickId && x.type === 'quick');
-            const existing = existingIndex >= 0 ? db.ledger[existingIndex] : null;
-            const selectedDate = document.getElementById('q-date').value;
-            const existingTime = existing?.date?.includes('T') ? existing.date.split('T')[1] : new Date().toTimeString().split(' ')[0];
-            const entry = {
-                ...(existing || {}),
-                id: existing?.id ?? Date.now(),
-                ref: existing?.ref || document.getElementById('q-ref').value,
-                date: selectedDate + 'T' + existingTime,
-                type: 'quick',
-                subType: document.getElementById('q-type').value,
-                client: document.getElementById('q-client').value,
-                amount: parseFloat(document.getElementById('q-amount').value) || 0,
-                currency: document.getElementById('q-currency').value,
-                rate: parseFloat(document.getElementById('q-rate').value) || 100,
-                totalIls: ilsValue,
-                totalUsd: getUsdEquivalent(ilsValue),
-                notes: document.getElementById('q-notes').value
-            };
-            if(existingIndex >= 0) db.ledger[existingIndex] = entry; else db.ledger.push(entry);
-            const synced = await saveDB();
-            if(synced) showToast(existing ? 'تم تعديل العملية ومزامنتها' : 'تم حفظ العملية ومزامنتها');
-            if(isPrint) await triggerPrint(entry.id);
-            editingQuickId = null;
-            form.reset();
-            init();
+            return runSaveOnce('quick', 'quick-form', async () => {
+                const form = document.getElementById('quick-form');
+                if(!form.checkValidity()) { form.reportValidity(); return; }
+                const amount = parseFloat(document.getElementById('q-amount').value) || 0;
+                const equivalentAmount = parseFloat(document.getElementById('q-ils').value) || 0;
+                const currency = document.getElementById('q-currency').value;
+                const equivalentCurrency = document.getElementById('q-equivalent-currency').value || 'ILS';
+                const enteredRate = parseFloat(document.getElementById('q-rate').value) || getDefaultPairRate(currency, equivalentCurrency);
+                const equivalentRate = getCurrencyRate(equivalentCurrency);
+                const financial = createFinancialSnapshot(currency, amount, equivalentCurrency, equivalentAmount, enteredRate, equivalentRate);
+                const existingIndex = editingQuickId === null ? -1 : db.ledger.findIndex(x => x.id === editingQuickId && x.type === 'quick');
+                const existing = existingIndex >= 0 ? db.ledger[existingIndex] : null;
+                const movement = await reserveMovementReference(existing);
+                const ref = movement.ref;
+                if(existingIndex < 0 && db.ledger.some(row => row.type === 'quick' && String(row.ref) === String(ref))) {
+                    showToast('هذه العملية محفوظة مسبقاً ولن يتم تكرارها', 'error');
+                    return;
+                }
+                const selectedDate = document.getElementById('q-date').value;
+                const existingTime = existing?.date?.includes('T') ? existing.date.split('T')[1] : new Date().toTimeString().split(' ')[0];
+                const entry = {
+                    ...(existing || {}),
+                    id: existing?.id ?? Date.now(),
+                    ref,
+                    movementNumber: movement.movementNumber,
+                    date: selectedDate + 'T' + existingTime,
+                    type: 'quick',
+                    subType: document.getElementById('q-type').value,
+                    client: document.getElementById('q-client').value,
+                    amount,
+                    currency,
+                    rate: enteredRate,
+                    ...financial,
+                    notes: document.getElementById('q-notes').value,
+                    savedAt: existing?.savedAt || new Date().toISOString(),
+                    updatedAtLocal: new Date().toISOString()
+                };
+                if(existingIndex >= 0) db.ledger[existingIndex] = entry; else db.ledger.push(entry);
+                const synced = await saveDB();
+                if(synced) showToast(existing ? 'تم تعديل العملية ومزامنتها' : 'تم حفظ العملية ومزامنتها');
+                if(isPrint) await triggerPrint(entry.id);
+                editingQuickId = null;
+                form.reset();
+                init();
+            });
         }
 
         async function saveTransfer(isPrint) {
-            const form = document.getElementById('transfer-form');
-            if(!form.checkValidity()) { form.reportValidity(); return; }
-            const ilsValue = parseFloat(document.getElementById('tr-ils').value) || 0;
-            const existingIndex = editingTransferId === null ? -1 : db.ledger.findIndex(x => x.id === editingTransferId && x.type === 'transfer');
-            const existing = existingIndex >= 0 ? db.ledger[existingIndex] : null;
-            const entry = {
-                ...(existing || {}),
-                id: existing?.id ?? Date.now(),
-                ref: existing?.ref || document.getElementById('tr-ref').value,
-                date: existing?.date || new Date().toISOString(),
-                type: 'transfer',
-                subType: document.getElementById('tr-type').value,
-                client: document.getElementById('tr-sender-name').value + ' لـ ' + document.getElementById('tr-receiver-name').value,
-                amount: parseFloat(document.getElementById('tr-amount').value) || 0,
-                currency: document.getElementById('tr-currency').value,
-                rate: parseFloat(document.getElementById('tr-rate').value) || 100,
-                totalIls: ilsValue,
-                totalUsd: getUsdEquivalent(ilsValue),
-                senderName: document.getElementById('tr-sender-name').value,
-                senderPhone: document.getElementById('tr-sender-phone').value,
-                senderId: document.getElementById('tr-sender-id').value,
-                receiverName: document.getElementById('tr-receiver-name').value,
-                receiverPhone: document.getElementById('tr-receiver-phone').value,
-                receiverCountry: document.getElementById('tr-receiver-country').value,
-                agent: document.getElementById('tr-agent').value
-            };
-            if(existingIndex >= 0) db.ledger[existingIndex] = entry; else db.ledger.push(entry);
-            const synced = await saveDB();
-            if(synced) showToast(existing ? 'تم تعديل الحوالة ومزامنتها' : 'تم حفظ الحوالة ومزامنتها');
-            if(isPrint) await triggerPrint(entry.id);
-            editingTransferId = null;
-            form.reset();
-            init();
+            return runSaveOnce('transfer', 'transfer-form', async () => {
+                const form = document.getElementById('transfer-form');
+                if(!form.checkValidity()) { form.reportValidity(); return; }
+                const amount = parseFloat(document.getElementById('tr-amount').value) || 0;
+                const equivalentAmount = parseFloat(document.getElementById('tr-ils').value) || 0;
+                const currency = document.getElementById('tr-currency').value;
+                const equivalentCurrency = document.getElementById('tr-equivalent-currency').value || 'ILS';
+                const enteredRate = parseFloat(document.getElementById('tr-rate').value) || getDefaultPairRate(currency, equivalentCurrency);
+                const equivalentRate = getCurrencyRate(equivalentCurrency);
+                const financial = createFinancialSnapshot(currency, amount, equivalentCurrency, equivalentAmount, enteredRate, equivalentRate);
+                const existingIndex = editingTransferId === null ? -1 : db.ledger.findIndex(x => x.id === editingTransferId && x.type === 'transfer');
+                const existing = existingIndex >= 0 ? db.ledger[existingIndex] : null;
+                const movement = await reserveMovementReference(existing);
+                const ref = movement.ref;
+                if(existingIndex < 0 && db.ledger.some(row => row.type === 'transfer' && String(row.ref) === String(ref))) {
+                    showToast('هذه الحوالة محفوظة مسبقاً ولن يتم تكرارها', 'error');
+                    return;
+                }
+                const entry = {
+                    ...(existing || {}),
+                    id: existing?.id ?? Date.now(),
+                    ref,
+                    movementNumber: movement.movementNumber,
+                    date: existing?.date || new Date().toISOString(),
+                    type: 'transfer',
+                    subType: document.getElementById('tr-type').value,
+                    client: document.getElementById('tr-sender-name').value + ' لـ ' + document.getElementById('tr-receiver-name').value,
+                    amount,
+                    currency,
+                    rate: enteredRate,
+                    ...financial,
+                    senderName: document.getElementById('tr-sender-name').value,
+                    senderPhone: document.getElementById('tr-sender-phone').value,
+                    senderId: document.getElementById('tr-sender-id').value,
+                    receiverName: document.getElementById('tr-receiver-name').value,
+                    receiverPhone: document.getElementById('tr-receiver-phone').value,
+                    receiverCountry: document.getElementById('tr-receiver-country').value,
+                    agent: document.getElementById('tr-agent').value,
+                    savedAt: existing?.savedAt || new Date().toISOString(),
+                    updatedAtLocal: new Date().toISOString()
+                };
+                if(existingIndex >= 0) db.ledger[existingIndex] = entry; else db.ledger.push(entry);
+                const synced = await saveDB();
+                if(synced) showToast(existing ? 'تم تعديل الحوالة ومزامنتها' : 'تم حفظ الحوالة ومزامنتها');
+                if(isPrint) await triggerPrint(entry.id);
+                editingTransferId = null;
+                form.reset();
+                init();
+            });
         }
 
         async function saveCheck(isPrint) {
-            const form = document.getElementById('check-form');
-            if(!form.checkValidity()) { form.reportValidity(); return; }
-            const ilsValue = parseFloat(document.getElementById('chk-ils').value) || 0;
-            const existingIndex = editingCheckId === null ? -1 : db.ledger.findIndex(x => x.id === editingCheckId && x.type === 'check');
-            const existing = existingIndex >= 0 ? db.ledger[existingIndex] : null;
-            const entry = {
-                ...(existing || {}),
-                id: existing?.id ?? Date.now(),
-                ref: document.getElementById('chk-no').value,
-                date: existing?.date || new Date().toISOString(),
-                type: 'check',
-                subType: document.getElementById('chk-type').value,
-                client: document.getElementById('chk-client').value,
-                amount: parseFloat(document.getElementById('chk-amount').value) || 0,
-                currency: document.getElementById('chk-currency').value,
-                rate: parseFloat(document.getElementById('chk-rate').value) || 100,
-                totalIls: ilsValue,
-                totalUsd: getUsdEquivalent(ilsValue),
-                bank: document.getElementById('chk-bank').value,
-                due: document.getElementById('chk-due').value,
-                notes: document.getElementById('chk-notes').value
-            };
-            if(existingIndex >= 0) db.ledger[existingIndex] = entry; else db.ledger.push(entry);
-            const synced = await saveDB();
-            if(synced) showToast(existing ? 'تم تعديل الشيك ومزامنته' : 'تم حفظ الشيك ومزامنته');
-            if(isPrint) await triggerPrint(entry.id);
-            editingCheckId = null;
-            form.reset();
-            init();
+            return runSaveOnce('check', 'check-form', async () => {
+                const form = document.getElementById('check-form');
+                if(!form.checkValidity()) { form.reportValidity(); return; }
+                const amount = parseFloat(document.getElementById('chk-amount').value) || 0;
+                const equivalentAmount = parseFloat(document.getElementById('chk-ils').value) || 0;
+                const currency = document.getElementById('chk-currency').value;
+                const equivalentCurrency = document.getElementById('chk-equivalent-currency').value || 'ILS';
+                const enteredRate = parseFloat(document.getElementById('chk-rate').value) || getDefaultPairRate(currency, equivalentCurrency);
+                const equivalentRate = getCurrencyRate(equivalentCurrency);
+                const financial = createFinancialSnapshot(currency, amount, equivalentCurrency, equivalentAmount, enteredRate, equivalentRate);
+                const existingIndex = editingCheckId === null ? -1 : db.ledger.findIndex(x => x.id === editingCheckId && x.type === 'check');
+                const existing = existingIndex >= 0 ? db.ledger[existingIndex] : null;
+                const movement = await reserveMovementReference(existing);
+                const ref = movement.ref;
+                const checkNo = document.getElementById('chk-no').value.trim();
+                if(existingIndex < 0 && checkNo && db.ledger.some(row => row.type === 'check' && String(row.checkNo || '') === checkNo)) {
+                    showToast('رقم الشيك محفوظ مسبقاً ولن يتم تكراره', 'error');
+                    return;
+                }
+                const entry = {
+                    ...(existing || {}),
+                    id: existing?.id ?? Date.now(),
+                    ref,
+                    movementNumber: movement.movementNumber,
+                    checkNo,
+                    date: existing?.date || new Date().toISOString(),
+                    type: 'check',
+                    subType: document.getElementById('chk-type').value,
+                    client: document.getElementById('chk-client').value,
+                    amount,
+                    currency,
+                    rate: enteredRate,
+                    ...financial,
+                    bank: document.getElementById('chk-bank').value,
+                    due: document.getElementById('chk-due').value,
+                    notes: document.getElementById('chk-notes').value,
+                    savedAt: existing?.savedAt || new Date().toISOString(),
+                    updatedAtLocal: new Date().toISOString()
+                };
+                if(existingIndex >= 0) db.ledger[existingIndex] = entry; else db.ledger.push(entry);
+                const synced = await saveDB();
+                if(synced) showToast(existing ? 'تم تعديل الشيك ومزامنته' : 'تم حفظ الشيك ومزامنته');
+                if(isPrint) await triggerPrint(entry.id);
+                editingCheckId = null;
+                form.reset();
+                init();
+            });
         }
 
         async function addClient() {
@@ -541,7 +871,112 @@ let defaultCurrencies = [
             });
         }
 
-        function getUsdValueSafe(t) { return t.totalUsd !== undefined ? t.totalUsd : getUsdEquivalent(t.totalIls); }
+        function getUsdValueSafe(t) {
+            const value = Number(t.totalUsdSnapshot ?? t.totalUsd);
+            return Number.isFinite(value) ? value : 0;
+        }
+
+        function getEquivalentSnapshot(entry) {
+            const currency = String(entry?.equivalentCurrency || 'ILS').toUpperCase();
+            const rate = Number(entry?.equivalentRateAtSave) || getCurrencyRate(currency);
+            let amount = Number(entry?.equivalentAmount);
+            if(!Number.isFinite(amount)) {
+                const totalIls = Number(entry?.totalIls) || 0;
+                amount = currency === 'ILS' ? totalIls : (rate > 0 ? totalIls / (rate / 100) : 0);
+            }
+            return { currency, amount: roundLedgerMoney(amount), rate };
+        }
+
+        function formatEquivalentSnapshot(entry) {
+            const snapshot = getEquivalentSnapshot(entry);
+            return `${snapshot.amount.toFixed(2)} ${snapshot.currency}`;
+        }
+
+        function formatMarketRate(value) {
+            const number = Number(value);
+            if(!Number.isFinite(number) || number <= 0) return '--';
+            if(number >= 100) return number.toFixed(2);
+            if(number >= 1) return number.toFixed(4);
+            return number.toFixed(6);
+        }
+
+        function readMarketRatesCache() {
+            try {
+                const cached = JSON.parse(localStorage.getItem(MARKET_RATES_CACHE_KEY) || 'null');
+                if(!cached || typeof cached !== 'object') return;
+                globalMarketRates = cached.rates && typeof cached.rates === 'object' ? cached.rates : {};
+                globalMarketRatesUpdatedAt = Number(cached.updatedAt) || 0;
+            } catch(error) {
+                console.error('Market rates cache read error:', error);
+            }
+        }
+
+        function saveMarketRatesCache() {
+            try {
+                localStorage.setItem(MARKET_RATES_CACHE_KEY, JSON.stringify({
+                    rates: globalMarketRates,
+                    updatedAt: globalMarketRatesUpdatedAt
+                }));
+            } catch(error) {
+                console.error('Market rates cache save error:', error);
+            }
+        }
+
+        async function fetchJsonWithTimeout(url, timeout = 12000) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeout);
+            try {
+                const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+                if(!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        async function refreshGlobalMarketRates(force = false) {
+            if(globalMarketRatesLoading) return;
+            const cacheIsFresh = globalMarketRatesUpdatedAt && (Date.now() - globalMarketRatesUpdatedAt < MARKET_RATES_MAX_AGE);
+            if(cacheIsFresh && !force) {
+                renderDashboard();
+                return;
+            }
+
+            globalMarketRatesLoading = true;
+            renderDashboard();
+            try {
+                const fiat = await fetchJsonWithTimeout('https://open.er-api.com/v6/latest/USD');
+                if(fiat?.result !== 'success' || !fiat?.rates?.ILS) throw new Error('Invalid market-rate response');
+
+                const usdToIls = Number(fiat.rates.ILS);
+                const nextRates = {};
+                (db.settings.currencies || []).forEach(currency => {
+                    const code = String(currency.code || '').toUpperCase();
+                    const usdToCurrency = Number(fiat.rates[code]);
+                    if(code === 'ILS') nextRates.ILS = 100;
+                    else if(Number.isFinite(usdToCurrency) && usdToCurrency > 0) {
+                        nextRates[code] = 100 * usdToIls / usdToCurrency;
+                    }
+                });
+
+                try {
+                    const usdt = await fetchJsonWithTimeout('https://api.coinbase.com/v2/prices/USDT-USD/spot');
+                    const usdtUsd = Number(usdt?.data?.amount);
+                    if(Number.isFinite(usdtUsd) && usdtUsd > 0) nextRates.USDT = 100 * usdtUsd * usdToIls;
+                } catch(error) {
+                    console.warn('USDT global rate unavailable:', error);
+                }
+
+                globalMarketRates = nextRates;
+                globalMarketRatesUpdatedAt = Date.now();
+                saveMarketRatesCache();
+            } catch(error) {
+                console.error('Global market rates error:', error);
+            } finally {
+                globalMarketRatesLoading = false;
+                renderDashboard();
+            }
+        }
 
         function renderDashboard() {
             const today = new Date().toISOString().split('T')[0];
@@ -549,8 +984,10 @@ let defaultCurrencies = [
             const ratesContainer = document.getElementById('dash-rates'); ratesContainer.innerHTML = '';
             db.settings.currencies.forEach(c => {
                 if(c.code === 'ILS') return;
-                ratesContainer.innerHTML += `<div class="flex justify-between items-center border-b pb-2"><span class="font-bold text-slate-700">100 ${c.name}</span><span class="text-blue-600 font-bold" dir="ltr">${c.rate} ₪</span></div>`;
+                const marketValue = formatMarketRate(globalMarketRates[String(c.code || '').toUpperCase()]);
+                ratesContainer.innerHTML += `<div class="flex justify-between items-center border-b pb-2 gap-3"><span class="font-bold text-slate-700">100 ${c.name}</span><span class="text-left shrink-0" dir="ltr"><span class="block text-blue-600 font-bold">${c.rate} ₪</span><span class="block text-red-600 text-xs font-bold mt-1">${marketValue}${marketValue === '--' ? '' : ' ₪'}</span></span></div>`;
             });
+            ratesContainer.innerHTML += `<div class="pt-1 text-[10px] text-slate-400 text-center"><a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer">Rates By Exchange Rate API</a></div>`;
 
             db.ledger.forEach(t => {
                 const valUsd = getUsdValueSafe(t);
@@ -564,52 +1001,110 @@ let defaultCurrencies = [
         }
 
         // ================= RENDER REPORTS (WITH FILTERING) =================
-        function renderReports() {
-            const filterStr = document.getElementById('rep-search').value.toLowerCase();
-            const tbody = document.getElementById('reports-body');
-            tbody.innerHTML = ''; let runBalance = 0; let totIn = 0; let totOut = 0;
-            const sorted = [...db.ledger].sort((a, b) => {
+        function passesActiveDateFilter(date) {
+            if(activeFilterType === 'today') {
+                const start = new Date(); start.setHours(0,0,0,0);
+                return date >= start;
+            }
+            if(activeFilterType === 'week') {
+                const start = new Date(); start.setDate(start.getDate() - 7); start.setHours(0,0,0,0);
+                return date >= start;
+            }
+            if(activeFilterType === 'month') {
+                const start = new Date(); start.setMonth(start.getMonth() - 1); start.setHours(0,0,0,0);
+                return date >= start;
+            }
+            if(activeFilterType === 'year') {
+                const start = new Date(); start.setFullYear(start.getFullYear() - 1); start.setHours(0,0,0,0);
+                return date >= start;
+            }
+            if(activeFilterType === 'custom') {
+                const start = new Date(customStartDate); start.setHours(0,0,0,0);
+                const end = new Date(customEndDate); end.setHours(23,59,59,999);
+                return date >= start && date <= end;
+            }
+            return true;
+        }
+
+        function calculateLedgerTotals(entries) {
+            const totals = (entries || []).reduce((acc, entry) => {
+                const valueUsd = getUsdValueSafe(entry);
+                if(entry.subType === 'in') acc.incoming += valueUsd;
+                if(entry.subType === 'out') acc.outgoing += valueUsd;
+                return acc;
+            }, { incoming: 0, outgoing: 0 });
+            totals.difference = totals.incoming - totals.outgoing;
+            return totals;
+        }
+
+        function getVisibleReportData() {
+            const filterStr = String(document.getElementById('rep-search')?.value || '').trim().toLowerCase();
+            let runningBalance = 0;
+            const chronological = [...db.ledger].sort((a, b) => {
                 const byDate = new Date(a.date || 0) - new Date(b.date || 0);
                 return byDate || (Number(a.id) || 0) - (Number(b.id) || 0);
             });
-            
-            sorted.forEach(t => {
-                const d = new Date(t.date);
-                const valUsd = getUsdValueSafe(t);
-                let inAmt = 0, outAmt = 0;
-                if(t.subType === 'in') inAmt = valUsd;
-                if(t.subType === 'out') outAmt = valUsd;
-                
-                runBalance += (inAmt - outAmt);
 
-                let passDate = true;
-                if(activeFilterType === 'today') { const ts = new Date(); ts.setHours(0,0,0,0); passDate = (d >= ts); }
-                else if(activeFilterType === 'week') { const ws = new Date(); ws.setDate(ws.getDate() - 7); ws.setHours(0,0,0,0); passDate = (d >= ws); }
-                else if(activeFilterType === 'month') { const ms = new Date(); ms.setMonth(ms.getMonth() - 1); ms.setHours(0,0,0,0); passDate = (d >= ms); }
-                else if(activeFilterType === 'year') { const ys = new Date(); ys.setFullYear(ys.getFullYear() - 1); ys.setHours(0,0,0,0); passDate = (d >= ys); }
-                else if(activeFilterType === 'custom') {
-                    const s = new Date(customStartDate); s.setHours(0,0,0,0);
-                    const e = new Date(customEndDate); e.setHours(23,59,59,999);
-                    passDate = (d >= s && d <= e);
-                }
+            const rows = [];
+            chronological.forEach(entry => {
+                const date = new Date(entry.date);
+                const valueUsd = getUsdValueSafe(entry);
+                const incoming = entry.subType === 'in' ? valueUsd : 0;
+                const outgoing = entry.subType === 'out' ? valueUsd : 0;
+                runningBalance += incoming - outgoing;
 
-                if(!passDate) return;
-                if(filterStr && !(t.client.toLowerCase().includes(filterStr) || t.ref.includes(filterStr) || t.notes?.toLowerCase().includes(filterStr))) return;
+                if(!passesActiveDateFilter(date)) return;
+                const searchable = `${entry.client || ''} ${entry.senderName || ''} ${entry.receiverName || ''} ${entry.ref || ''} ${entry.notes || ''} ${entry.currency || ''} ${entry.equivalentCurrency || ''}`.toLowerCase();
+                if(filterStr && !searchable.includes(filterStr)) return;
 
-                totIn += inAmt; totOut += outAmt;
-                const balanceClass = runBalance < 0 ? 'text-red-600' : 'text-slate-800';
-                
+                rows.push({ entry, date, incoming, outgoing, balance: runningBalance });
+            });
+
+            rows.reverse();
+            const totals = rows.reduce((acc, row) => {
+                acc.incoming += row.incoming;
+                acc.outgoing += row.outgoing;
+                return acc;
+            }, { incoming: 0, outgoing: 0 });
+            totals.difference = totals.incoming - totals.outgoing;
+
+            const allTotals = calculateLedgerTotals(db.ledger);
+            return { rows, totals, allTotals };
+        }
+
+        function formatSignedAmount(value) {
+            return value < 0 ? `${Math.abs(value).toFixed(2)}-` : value.toFixed(2);
+        }
+
+        function getLedgerDisplayName(entry) {
+            if(entry?.type === 'transfer') return entry.receiverName || entry.client || '-';
+            return entry?.client || '-';
+        }
+
+        function renderReports() {
+            const tbody = document.getElementById('reports-body');
+            tbody.innerHTML = '';
+            const { rows, totals, allTotals } = getVisibleReportData();
+
+            rows.forEach(({ entry: t, date: d, incoming: inAmt, outgoing: outAmt, balance }) => {
+                const balanceClass = balance < 0 ? 'text-red-600' : 'text-slate-800';
                 tbody.innerHTML += `
                     <tr>
                         <td class="text-xs text-slate-500">${d.toLocaleDateString('en-GB')}<br><span class="text-[10px]">${d.toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit'})}</span></td>
                         <td class="text-right leading-tight">
-                            <span class="font-bold text-slate-800 block">${t.client}</span>
-                            <span class="text-[10px] text-slate-500 bg-slate-200 px-1 rounded inline-block mt-1">م: ${t.ref} | ${t.amount} ${t.currency}</span>
+                            <span class="font-bold text-slate-800 block">${getLedgerDisplayName(t)}</span>
+                            <span class="text-[10px] text-slate-500 bg-slate-200 px-1 rounded inline-block mt-1">م: ${t.ref || '-'} | ${t.amount || 0} ${t.currency || ''}</span>
                             ${t.notes ? `<div class="text-xs text-blue-600 mt-1"><i class="fas fa-comment-alt"></i> ${t.notes}</div>` : ''}
                         </td>
-                        <td class="text-green-600 font-black">${inAmt > 0 ? inAmt.toFixed(2) : '0'}</td>
-                        <td class="text-red-600 font-black">${outAmt > 0 ? outAmt.toFixed(2) : '0'}</td>
-                        <td class="font-black ${balanceClass}" dir="ltr">${runBalance < 0 ? Math.abs(runBalance).toFixed(2)+'-' : runBalance.toFixed(2)}</td>
+                        <td class="text-green-600 font-black">
+                            <div>${inAmt > 0 ? inAmt.toFixed(2) : '0'}</div>
+                            ${inAmt > 0 ? `<div class="ledger-ils-subvalue">${formatEquivalentSnapshot(t)}</div>` : ''}
+                        </td>
+                        <td class="text-red-600 font-black">
+                            <div>${outAmt > 0 ? outAmt.toFixed(2) : '0'}</div>
+                            ${outAmt > 0 ? `<div class="ledger-ils-subvalue">${formatEquivalentSnapshot(t)}</div>` : ''}
+                        </td>
+                        <td class="font-black ${balanceClass}" dir="ltr">${formatSignedAmount(balance)}</td>
                         <td class="no-print">
                             <div class="flex justify-center items-center gap-2 bg-slate-50 p-1 rounded border">
                                 <select id="lang-${t.id}" class="text-xs font-bold border-0 bg-transparent text-slate-700 outline-none cursor-pointer">
@@ -628,10 +1123,15 @@ let defaultCurrencies = [
                 `;
             });
 
-            document.getElementById('tot-in').innerText = totIn.toFixed(2);
-            document.getElementById('tot-out').innerText = totOut.toFixed(2);
-            const diff = totIn - totOut;
-            document.getElementById('tot-diff').innerText = diff < 0 ? Math.abs(diff).toFixed(2)+'-' : diff.toFixed(2);
+            const periodInEl = document.getElementById('period-tot-in');
+            const periodOutEl = document.getElementById('period-tot-out');
+            const periodDiffEl = document.getElementById('period-tot-diff');
+            if(periodInEl) periodInEl.innerText = totals.incoming.toFixed(2);
+            if(periodOutEl) periodOutEl.innerText = totals.outgoing.toFixed(2);
+            if(periodDiffEl) periodDiffEl.innerText = formatSignedAmount(totals.difference);
+            document.getElementById('all-tot-in').innerText = allTotals.incoming.toFixed(2);
+            document.getElementById('all-tot-out').innerText = allTotals.outgoing.toFixed(2);
+            document.getElementById('all-tot-diff').innerText = formatSignedAmount(allTotals.difference);
         }
 
         async function deleteLedgerEntry(id) {
@@ -645,7 +1145,9 @@ let defaultCurrencies = [
 
         function editLedgerEntry(id) {
             const entry = db.ledger.find(x => x.id === id); if(!entry) return;
-            const derivedRate = entry.rate || (entry.amount ? (Number(entry.totalIls || 0) / Number(entry.amount)) * 100 : 100);
+            const equivalentSnapshot = getEquivalentSnapshot(entry);
+            const derivedRate = Number(entry.pairRateAtSave ?? entry.rate)
+                || (Number(entry.amount) > 0 ? (equivalentSnapshot.amount / Number(entry.amount)) * 100 : getDefaultPairRate(entry.currency || 'USD', equivalentSnapshot.currency));
             if(entry.type === 'transfer') {
                 switchTab('transfers');
                 editingTransferId = id;
@@ -661,8 +1163,10 @@ let defaultCurrencies = [
                 document.getElementById('tr-currency').value = entry.currency || 'USD';
                 document.getElementById('tr-rate').value = Number(derivedRate).toFixed(4);
                 document.getElementById('tr-amount').value = entry.amount || 0;
-                document.getElementById('tr-ils').value = Number(entry.totalIls || 0).toFixed(2);
+                document.getElementById('tr-equivalent-currency').value = equivalentSnapshot.currency;
+                document.getElementById('tr-ils').value = equivalentSnapshot.amount.toFixed(2);
                 document.getElementById('tr-sync').checked = false;
+                updateEquivalentRateNote('tr');
                 showToast('عدّل بيانات الحوالة ثم اضغط حفظ');
                 return;
             }
@@ -670,16 +1174,19 @@ let defaultCurrencies = [
                 switchTab('checks');
                 editingCheckId = id;
                 document.getElementById('chk-type').value = entry.subType || 'out';
-                document.getElementById('chk-no').value = entry.ref || '';
+                if(document.getElementById('chk-ref')) document.getElementById('chk-ref').value = entry.ref || '';
+                document.getElementById('chk-no').value = entry.checkNo || '';
                 document.getElementById('chk-client').value = entry.client || '';
                 document.getElementById('chk-bank').value = entry.bank || '';
                 document.getElementById('chk-due').value = entry.due || new Date().toISOString().split('T')[0];
                 document.getElementById('chk-currency').value = entry.currency || 'USD';
                 document.getElementById('chk-rate').value = Number(derivedRate).toFixed(4);
                 document.getElementById('chk-amount').value = entry.amount || 0;
-                document.getElementById('chk-ils').value = Number(entry.totalIls || 0).toFixed(2);
+                document.getElementById('chk-equivalent-currency').value = equivalentSnapshot.currency;
+                document.getElementById('chk-ils').value = equivalentSnapshot.amount.toFixed(2);
                 document.getElementById('chk-notes').value = entry.notes || '';
                 document.getElementById('chk-sync').checked = false;
+                updateEquivalentRateNote('chk');
                 showToast('عدّل بيانات الشيك ثم اضغط حفظ');
                 return;
             }
@@ -692,77 +1199,197 @@ let defaultCurrencies = [
             document.getElementById('q-currency').value = entry.currency || 'USD';
             document.getElementById('q-rate').value = Number(derivedRate).toFixed(4);
             document.getElementById('q-amount').value = entry.amount || 0;
-            document.getElementById('q-ils').value = Number(entry.totalIls || 0).toFixed(2);
+            document.getElementById('q-equivalent-currency').value = equivalentSnapshot.currency;
+            document.getElementById('q-ils').value = equivalentSnapshot.amount.toFixed(2);
             document.getElementById('q-notes').value = entry.notes || '';
             document.getElementById('q-sync').checked = false;
+            updateEquivalentRateNote('q');
             updateQuickFormColors();
             showToast('عدّل بيانات العملية ثم اضغط حفظ العملية');
         }
 
         // ================= EXCEL EXPORT =================
+        function reportPeriodLabel() {
+            const label = document.getElementById('active-filter-text')?.innerText?.trim();
+            return label || 'كل الأوقات';
+        }
+
+        function reportDetailsText(entry) {
+            const parts = [
+                entry.client || '-',
+                `المرجع: ${entry.ref || '-'}`,
+                `المبلغ: ${entry.amount || 0} ${entry.currency || ''}`,
+                `المكافئ: ${formatEquivalentSnapshot(entry)}`
+            ];
+            if(entry.notes) parts.push(`ملاحظات: ${entry.notes}`);
+            return parts.join(' | ');
+        }
+
+        function escapeReportHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+            })[char]);
+        }
+
+        function reportDetailsHtml(entry) {
+            const client = escapeReportHtml(entry.client || '-');
+            const ref = escapeReportHtml(entry.ref || '-');
+            const amount = escapeReportHtml(entry.amount || 0);
+            const currency = escapeReportHtml(entry.currency || '');
+            const equivalent = escapeReportHtml(formatEquivalentSnapshot(entry));
+            const notes = entry.notes ? `<div style="margin-top:3px;color:#475569;font-size:11px;">ملاحظات: ${escapeReportHtml(entry.notes)}</div>` : '';
+            return `<div style="font-weight:800;margin-bottom:3px;">${client}</div><div style="font-size:11px;color:#475569;">المرجع: ${ref} &nbsp;|&nbsp; المبلغ: ${amount} ${currency} &nbsp;|&nbsp; المكافئ: ${equivalent}</div>${notes}`;
+        }
+
         function exportReportsExcel() {
-            showToast('جاري تصدير التقرير لإكسل...', 'success');
-            const ws_data = [['التاريخ', 'التفاصيل', 'وارد (دولار)', 'منصرف (دولار)', 'الرصيد التراكمي']];
-            const rows = document.querySelectorAll('#reports-body tr');
-            rows.forEach(tr => {
-                const cols = tr.querySelectorAll('td');
-                if(cols.length > 0) { ws_data.push([ cols[0].textContent.replace(/\n/g, ' ').trim(), cols[1].textContent.replace(/\n/g, ' ').trim(), cols[2].textContent.trim(), cols[3].textContent.trim(), cols[4].textContent.trim() ]); }
+            showToast('جاري تصدير كل عمليات الفترة الظاهرة لإكسل...', 'success');
+            const { rows, totals, allTotals } = getVisibleReportData();
+            const wsData = [
+                ['البيان', 'الوارد', 'الصادر', 'الصافي', ''],
+                ['الفترة', totals.incoming, totals.outgoing, totals.difference, ''],
+                ['كل الفترات', allTotals.incoming, allTotals.outgoing, allTotals.difference, ''],
+                [`الفترة المحددة: ${reportPeriodLabel()}`, `عدد العمليات: ${rows.length}`, '', '', ''],
+                [],
+                ['التاريخ', 'التفاصيل', 'وارد (دولار)', 'منصرف (دولار)', 'الرصيد التراكمي']
+            ];
+
+            rows.forEach(({ entry, date, incoming, outgoing, balance }) => {
+                wsData.push([
+                    `${date.toLocaleDateString('en-GB')} ${date.toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit'})}`,
+                    reportDetailsText(entry),
+                    Number(incoming.toFixed(2)),
+                    Number(outgoing.toFixed(2)),
+                    Number(balance.toFixed(2))
+                ]);
             });
-            const totIn = document.getElementById('tot-in').innerText;
-            const totOut = document.getElementById('tot-out').innerText;
-            const totDiff = document.getElementById('tot-diff').innerText;
-            ws_data.push(['', 'الإجماليات للفترة المحددة:', totIn, totOut, totDiff]);
-            
-            const ws = XLSX.utils.aoa_to_sheet(ws_data);
+
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
             ws['!dir'] = 'rtl';
-            ws['!cols'] = [{wch: 20}, {wch: 40}, {wch: 15}, {wch: 15}, {wch: 20}];
+            ws['!cols'] = [{wch: 15}, {wch: 50}, {wch: 17}, {wch: 18}, {wch: 27}];
+            ws['!merges'] = [
+                {s:{r:0,c:3}, e:{r:0,c:4}},
+                {s:{r:1,c:3}, e:{r:1,c:4}},
+                {s:{r:2,c:3}, e:{r:2,c:4}}
+            ];
+            ws['!autofilter'] = { ref: `A6:E${Math.max(6, wsData.length)}` };
             const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, "كشف الحساب");
+            XLSX.utils.book_append_sheet(wb, ws, 'كشف الحساب');
             XLSX.writeFile(wb, `CashTop_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
         }
 
-        // ================= PDF EXPORT (REPORTS TABLE) =================
-        function exportReportsPDF() {
-            showToast('جاري تجهيز تقرير PDF احترافي...', 'success');
-            const clonedTable = document.getElementById('reports-table').cloneNode(true);
-            clonedTable.querySelectorAll('th:last-child, td:last-child').forEach(el => el.remove());
-            
+        // ================= PDF EXPORT (ALL VISIBLE PERIOD ROWS) =================
+        async function exportReportsPDF() {
+            showToast('جاري تجهيز كل عمليات الفترة الظاهرة في PDF...', 'success');
+            const { rows, totals, allTotals } = getVisibleReportData();
             const container = document.createElement('div');
-            container.className = 'print-container p-8';
+            container.className = 'print-container p-6';
             container.dir = 'rtl';
-            const filterText = document.getElementById('active-filter-text').innerText;
-            
+            container.style.fontFamily = "'Cairo', sans-serif";
+            container.style.background = '#ffffff';
+            container.style.width = '1120px';
+
+            const tableRows = rows.map(({ entry, date, incoming, outgoing, balance }) => `
+                <tr style="page-break-inside:avoid; break-inside:avoid;">
+                    <td>${date.toLocaleDateString('en-GB')}<br><small>${date.toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit'})}</small></td>
+                    <td style="text-align:right;">${reportDetailsText(entry)}</td>
+                    <td style="color:#15803d;font-weight:800;">${incoming > 0 ? `<div>${incoming.toFixed(2)}</div><div style="font-size:9px;color:#64748b;margin-top:2px;">${formatEquivalentSnapshot(entry)}</div>` : '0'}</td>
+                    <td style="color:#dc2626;font-weight:800;">${outgoing > 0 ? `<div>${outgoing.toFixed(2)}</div><div style="font-size:9px;color:#64748b;margin-top:2px;">${formatEquivalentSnapshot(entry)}</div>` : '0'}</td>
+                    <td dir="ltr" style="font-weight:800;">${formatSignedAmount(balance)}</td>
+                </tr>
+            `).join('');
+
             container.innerHTML = `
-                <div class="text-center mb-6 border-b-4 border-slate-800 pb-4">
-                    <h1 class="text-3xl font-black text-slate-900">${db.settings.companyName}</h1>
-                    <h2 class="text-xl font-bold text-slate-600 mt-2">كشف حساب الصندوق العام (بالدولار الأمريكي)</h2>
-                    <div class="flex justify-between items-center mt-4 text-sm font-bold text-slate-700 bg-slate-100 p-2 rounded">
+                <div style="text-align:center;border-bottom:4px solid #0f172a;padding-bottom:14px;margin-bottom:16px;">
+                    <h1 style="font-size:28px;font-weight:900;margin:0;color:#0f172a;">${db.settings.companyName}</h1>
+                    <h2 style="font-size:18px;font-weight:700;margin:8px 0;color:#475569;">كشف حساب الصندوق العام (بالدولار الأمريكي)</h2>
+                    <div style="display:flex;justify-content:space-between;gap:12px;margin-top:12px;font-size:13px;font-weight:700;background:#f1f5f9;padding:10px;border-radius:8px;">
                         <span>تاريخ الطباعة: ${new Date().toLocaleString('ar-EG')}</span>
-                        ${filterText ? `<span class="text-blue-700 bg-blue-100 px-2 py-1 rounded">الفترة: ${filterText}</span>` : '<span>الفترة: كل الأوقات</span>'}
+                        <span>الفترة: ${reportPeriodLabel()}</span>
+                        <span>عدد العمليات: ${rows.length}</span>
                     </div>
                 </div>
-            `;
-            
-            clonedTable.classList.remove('w-full', 'overflow-x-auto');
-            clonedTable.style.width = '100%';
-            clonedTable.style.borderCollapse = 'collapse';
-            clonedTable.querySelectorAll('th, td').forEach(cell => { cell.style.border = '1px solid #cbd5e1'; cell.style.padding = '10px'; cell.style.textAlign = 'center'; });
-            clonedTable.querySelectorAll('th').forEach(th => { th.style.backgroundColor = '#f1f5f9'; th.style.color = '#0f172a'; });
 
-            container.appendChild(clonedTable);
+                <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;table-layout:fixed;">
+                    <colgroup>
+                        <col style="width:12%;">
+                        <col style="width:18%;">
+                        <col style="width:18%;">
+                        <col style="width:52%;">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>البيان</th>
+                            <th>الوارد</th>
+                            <th>الصادر</th>
+                            <th>الصافي</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="font-weight:800;">الفترة</td>
+                            <td dir="ltr">${totals.incoming.toFixed(2)}</td>
+                            <td dir="ltr">${totals.outgoing.toFixed(2)}</td>
+                            <td dir="ltr" style="font-size:15px;font-weight:900;white-space:nowrap;">${formatSignedAmount(totals.difference)}</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight:800;">كل الفترات</td>
+                            <td dir="ltr">${allTotals.incoming.toFixed(2)}</td>
+                            <td dir="ltr">${allTotals.outgoing.toFixed(2)}</td>
+                            <td dir="ltr" style="font-size:15px;font-weight:900;white-space:nowrap;">${formatSignedAmount(allTotals.difference)}</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead style="display:table-header-group;">
+                        <tr>
+                            <th style="width:16%;">التاريخ</th>
+                            <th>التفاصيل</th>
+                            <th style="width:14%;">وارد (دولار)</th>
+                            <th style="width:14%;">منصرف (دولار)</th>
+                            <th style="width:14%;">الرصيد</th>
+                        </tr>
+                    </thead>
+                    <tbody>${tableRows || '<tr><td colspan="5" style="padding:30px;text-align:center;">لا توجد عمليات ضمن الفترة الظاهرة</td></tr>'}</tbody>
+                </table>
+            `;
+
+            container.querySelectorAll('th, td').forEach(cell => {
+                cell.style.border = '1px solid #cbd5e1';
+                cell.style.padding = '9px';
+                cell.style.textAlign = cell.style.textAlign || 'center';
+            });
+            container.querySelectorAll('th').forEach(th => {
+                th.style.backgroundColor = '#e2e8f0';
+                th.style.color = '#0f172a';
+                th.style.fontWeight = '900';
+            });
+
             const wrapper = document.getElementById('print-wrapper');
-            const oldHtml = wrapper.innerHTML; 
+            const oldHtml = wrapper.innerHTML;
             wrapper.innerHTML = '';
             wrapper.appendChild(container);
             wrapper.className = 'offscreen-render';
 
-            const opt = { margin: 0.5, filename: `CashTop_Report_${Date.now()}.pdf`, image: { type: 'jpeg', quality: 1 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'in', format: 'a4', orientation: 'landscape' } };
-            
-            html2pdf().set(opt).from(container).save().then(() => {
+            const options = {
+                margin: [0.35, 0.3, 0.35, 0.3],
+                filename: `CashTop_Report_${Date.now()}.pdf`,
+                image: { type: 'jpeg', quality: 1 },
+                html2canvas: { scale: 2, useCORS: true, allowTaint: false, backgroundColor: '#ffffff', logging: false },
+                jsPDF: { unit: 'in', format: 'a4', orientation: 'landscape' },
+                pagebreak: { mode: ['css', 'legacy'], before: '.page-break-before', avoid: 'tr' }
+            };
+
+            try {
+                await html2pdf().set(options).from(container).save();
+                showToast('تم تحميل كل عمليات الفترة الظاهرة في PDF');
+            } catch(error) {
+                console.error('Report PDF export error:', error);
+                showToast('تعذر تجهيز تقرير PDF', 'error');
+            } finally {
                 wrapper.className = 'hidden';
                 wrapper.innerHTML = oldHtml;
-                showToast('تم تحميل ملف PDF بنجاح');
-            });
+            }
         }
 
         // ================= RECEIPT PRINT & TRANSLATION =================
@@ -772,8 +1399,22 @@ let defaultCurrencies = [
             const isEn = lang === 'en';
             
             tmpl.dir = isEn ? 'ltr' : 'rtl';
+            tmpl.style.fontFamily = "'Cairo', sans-serif";
             const receiptLogo = tmpl.querySelector('.logo-img');
-            if(receiptLogo) { receiptLogo.src = getEffectiveLogo(); receiptLogo.classList.remove('hidden'); }
+            if(receiptLogo) {
+                receiptLogo.src = getEffectiveLogo();
+                receiptLogo.classList.remove('hidden');
+                receiptLogo.setAttribute('referrerpolicy', 'no-referrer');
+                receiptLogo.onerror = function() {
+                    if(this.dataset.fallbackApplied === '1') {
+                        this.classList.add('hidden');
+                        return;
+                    }
+                    this.dataset.fallbackApplied = '1';
+                    this.src = DEFAULT_LOGO_FILE;
+                    this.classList.remove('hidden');
+                };
+            }
             
             // تغيير اسم الشركة (للوطن) عند اختيار الإنجليزية
             const titleEl = document.getElementById('pr-comp-name');
@@ -784,7 +1425,7 @@ let defaultCurrencies = [
             document.getElementById('pr-lbl-date').innerText = isEn ? 'Date & Time:' : 'التاريخ والوقت:';
             document.getElementById('pr-lbl-client').innerText = isEn ? 'Client/Beneficiary:' : 'المستفيد/العميل:';
             document.getElementById('pr-lbl-amount').innerText = isEn ? 'Amount' : 'المبلغ';
-            document.getElementById('pr-lbl-eq').innerText = isEn ? 'Equivalent (ILS): ' : 'المعادل (للقبض/الصرف): ';
+            document.getElementById('pr-lbl-eq').innerText = isEn ? 'Equivalent: ' : 'المعادل (للقبض/الصرف): ';
             document.getElementById('pr-lbl-emp').innerText = isEn ? 'Employee Sign' : 'توقيع الموظف';
             document.getElementById('pr-lbl-cust').innerText = isEn ? 'Client Sign / Stamp' : 'الختم / توقيع العميل';
 
@@ -793,21 +1434,21 @@ let defaultCurrencies = [
             
             const badgeEl = document.getElementById('pr-title');
             badgeEl.innerText = isEn ? typeStrEn : typeStrAr;
-            badgeEl.className = entry.subType === 'in' ? 'text-xl font-black bg-green-200 text-green-900 rounded receipt-badge receipt-title-badge' : 'text-xl font-black bg-red-200 text-red-900 rounded receipt-badge receipt-title-badge';
+            badgeEl.className = entry.subType === 'in' ? 'receipt-title-bg receipt-title-in' : 'receipt-title-bg receipt-title-out';
             
             document.getElementById('pr-ref').innerText = entry.ref; 
             document.getElementById('pr-date').innerText = new Date(entry.date).toLocaleString('ar-EG'); 
             document.getElementById('pr-client').innerText = entry.client; 
             document.getElementById('pr-amount').innerText = entry.amount; 
             document.getElementById('pr-cur').innerText = entry.currency; 
-            document.getElementById('pr-ils').innerText = Number(entry.totalIls || 0).toFixed(2);
+            document.getElementById('pr-ils').innerText = formatEquivalentSnapshot(entry);
             
             let extraStr = '';
             if(entry.type === 'transfer') { 
                 if(isEn) {
-                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-left rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3"><i class="fas fa-info-circle text-blue-500"></i> Transfer Details</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">Sender:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Sender Phone:</span> <strong class="text-lg">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver Phone:</span> <strong class="text-lg">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Dest. Country:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Agent:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
+                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-left rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3">Transfer Details</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">Sender:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Sender Phone:</span> <strong class="text-lg">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Receiver Phone:</span> <strong class="text-lg">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Dest. Country:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">Agent:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
                 } else {
-                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-right rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3"><i class="fas fa-info-circle text-blue-500"></i> تفاصيل الحوالة</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">المرسل:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المرسل:</span> <strong class="text-lg" dir="ltr">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">المستلم:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المستلم:</span> <strong class="text-lg" dir="ltr">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">بلد الاستلام:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">الوكيل المراسل:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
+                    extraStr = `<div class="border-2 border-slate-300 p-4 mb-4 bg-slate-50 text-right rounded text-base"><h4 class="font-black text-slate-800 border-b-2 border-slate-300 pb-2 mb-3">تفاصيل الحوالة</h4><div class="grid grid-cols-2 gap-y-4 gap-x-8"><div><span class="text-slate-500 block text-xs">المرسل:</span> <strong class="text-lg">${entry.senderName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المرسل:</span> <strong class="text-lg" dir="ltr">${entry.senderPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">المستلم:</span> <strong class="text-lg">${entry.receiverName || '---'}</strong></div><div><span class="text-slate-500 block text-xs">هاتف المستلم:</span> <strong class="text-lg" dir="ltr">${entry.receiverPhone || '---'}</strong></div><div><span class="text-slate-500 block text-xs">بلد الاستلام:</span> <strong class="text-lg">${entry.receiverCountry || '---'}</strong></div><div><span class="text-slate-500 block text-xs">الوكيل المراسل:</span> <strong class="text-lg text-blue-700">${entry.agent || '---'}</strong></div></div></div>`;
                 }
             } 
             else if (entry.type === 'check') { 
@@ -820,7 +1461,7 @@ let defaultCurrencies = [
             else if(entry.notes) { 
                 extraStr += `<p class="border p-2 bg-slate-50 rounded text-${isEn?'left':'right'}"><strong>${isEn?'Notes:':'ملاحظات:'}</strong> ${entry.notes}</p>`; 
             }
-            document.getElementById('pr-extra').innerHTML = extraStr; 
+            const extraEl = document.getElementById('pr-extra'); extraEl.style.fontFamily = "'Cairo', sans-serif"; extraEl.innerHTML = extraStr; 
             return tmpl;
         }
 
@@ -842,6 +1483,38 @@ let defaultCurrencies = [
             return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         }
 
+        function pause(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function buildPrintFrameDocument(receiptHtml, dir = 'rtl') {
+            const styleNodes = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+                .map(node => node.outerHTML)
+                .join('\n');
+            return [
+                '<!DOCTYPE html>',
+                `<html lang="ar" dir="${dir}">`,
+                '<head>',
+                '<meta charset="UTF-8">',
+                '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+                `<base href="${location.href}">`,
+                styleNodes,
+                '<style>' +
+                    '@page{size:A4 portrait;margin:8mm;}' +
+                    'html,body{width:100%!important;height:auto!important;min-height:0!important;background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important;font-family:"Cairo",sans-serif!important;}' +
+                    'body{display:block!important;}' +
+                    'body>*{visibility:visible!important;}' +
+                    '#print-wrapper{display:block!important;position:static!important;width:100%!important;height:auto!important;margin:0!important;padding:0!important;background:#fff!important;visibility:visible!important;}' +
+                    '#print-wrapper,#print-wrapper *{visibility:visible!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;font-family:"Cairo",sans-serif!important;}' +
+                    '#print-wrapper #tmpl-receipt{display:block!important;position:static!important;width:190mm!important;max-width:190mm!important;min-height:260mm!important;margin:0 auto!important;padding:9mm!important;box-sizing:border-box!important;background:#fff!important;border:1.2mm solid #0f172a!important;break-inside:avoid!important;page-break-inside:avoid!important;}' +
+                    '.no-print{display:none!important;}' +
+                '</style>',
+                '</head>',
+                `<body><div id="print-wrapper" class="print-mode">${receiptHtml}</div></body>`,
+                '</html>'
+            ].join('');
+        }
+
         async function printLedgerReceipt(id) {
             const lang = document.getElementById('lang-' + id)?.value || 'ar';
             await triggerPrint(id, lang);
@@ -850,20 +1523,91 @@ let defaultCurrencies = [
         async function triggerPrint(id, lang = 'ar') {
             const el = prepareReceiptDOM(id, lang); if(!el) return;
             const wrapper = document.getElementById('print-wrapper');
-            wrapper.className = 'print-mode offscreen-render';
+            wrapper.className = 'print-mode print-preview-mode';
+            document.body.classList.add('print-preview-open');
             await waitForReceiptAssets(el);
             await nextPaint();
-            let cleaned = false;
-            const cleanup = () => {
-                if(cleaned) return;
-                cleaned = true;
-                wrapper.className = 'hidden';
-                window.removeEventListener('afterprint', cleanup);
-            };
-            window.addEventListener('afterprint', cleanup, {once: true});
-            setTimeout(cleanup, 60000);
-            window.print();
-            setTimeout(cleanup, 1500);
+            await pause(250);
+            wrapper.scrollTop = 0;
+            showToast('تم تجهيز المعاينة، اضغط طباعة الآن');
+        }
+
+        function closePrintPreview() {
+            const wrapper = document.getElementById('print-wrapper');
+            wrapper.className = 'hidden';
+            document.body.classList.remove('print-preview-open');
+        }
+
+        async function confirmPrintPreview() {
+            const wrapper = document.getElementById('print-wrapper');
+            const receipt = document.getElementById('tmpl-receipt');
+            if(!wrapper || !receipt || wrapper.classList.contains('hidden')) return;
+
+            let iframe = null;
+            try {
+                showToast('جاري تجهيز صفحة A4 للطباعة...', 'success');
+                await waitForReceiptAssets(receipt);
+                if(document.fonts?.ready) await document.fonts.ready;
+                await nextPaint();
+
+                iframe = document.createElement('iframe');
+                iframe.setAttribute('aria-hidden', 'true');
+                iframe.style.cssText = [
+                    'position:fixed',
+                    'top:0',
+                    'left:-220vw',
+                    'width:210mm',
+                    'height:297mm',
+                    'border:0',
+                    'background:#fff',
+                    'visibility:visible',
+                    'pointer-events:none'
+                ].join(';');
+                document.body.appendChild(iframe);
+
+                const frameDoc = iframe.contentDocument || iframe.contentWindow.document;
+                frameDoc.open();
+                frameDoc.write(buildPrintFrameDocument(receipt.outerHTML, receipt.dir || 'rtl'));
+                frameDoc.close();
+
+                await new Promise(resolve => {
+                    const done = () => resolve();
+                    iframe.addEventListener('load', done, { once: true });
+                    setTimeout(done, 900);
+                });
+
+                const frameWin = iframe.contentWindow;
+                const frameReceipt = frameDoc.getElementById('tmpl-receipt');
+                if(frameDoc.fonts?.ready) {
+                    try { await frameDoc.fonts.ready; } catch(_) {}
+                }
+                if(frameReceipt) {
+                    await Promise.all(Array.from(frameReceipt.querySelectorAll('img')).map(img => new Promise(resolve => {
+                        if(img.complete && img.naturalWidth > 0) return resolve();
+                        const done = () => resolve();
+                        img.addEventListener('load', done, { once: true });
+                        img.addEventListener('error', done, { once: true });
+                        setTimeout(done, 4000);
+                    })));
+                }
+                await pause(350);
+
+                let cleaned = false;
+                const cleanup = () => {
+                    if(cleaned) return;
+                    cleaned = true;
+                    closePrintPreview();
+                    setTimeout(() => iframe?.remove(), 300);
+                };
+                frameWin.addEventListener('afterprint', cleanup, { once: true });
+                setTimeout(cleanup, 60000);
+                frameWin.focus();
+                frameWin.print();
+            } catch(error) {
+                console.error('Print preview error:', error);
+                iframe?.remove();
+                showToast('تعذر تشغيل الطباعة، حاول مرة أخرى', 'error');
+            }
         }
 
         async function downloadReceipt(id, type) {
@@ -975,332 +1719,6 @@ let defaultCurrencies = [
 
 
 
-        // ================= APP LOCK & BIOMETRIC =================
-        const DEVICE_ID_KEY = 'watanSecurityDeviceId';
-        let appUnlocked = false;
-        let securityInitializationInProgress = false;
-
-        function ensureSecurityShape() {
-            db.settings = db.settings || {};
-            const current = db.settings.security && typeof db.settings.security === 'object' ? db.settings.security : {};
-            const credentials = current.biometricCredentials && typeof current.biometricCredentials === 'object'
-                ? current.biometricCredentials
-                : {};
-            db.settings.security = {
-                pinHash: String(current.pinHash || ''),
-                biometricEnabled: Boolean(current.biometricEnabled),
-                biometricCredentials: credentials,
-                pinUpdatedAt: current.pinUpdatedAt || null
-            };
-            return db.settings.security;
-        }
-
-        function getDeviceId() {
-            let id = localStorage.getItem(DEVICE_ID_KEY);
-            if(id) return id;
-            const random = new Uint8Array(16);
-            crypto.getRandomValues(random);
-            id = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
-            localStorage.setItem(DEVICE_ID_KEY, id);
-            return id;
-        }
-
-        function randomBytes(length = 32) {
-            const bytes = new Uint8Array(length);
-            crypto.getRandomValues(bytes);
-            return bytes;
-        }
-
-        function bytesToBase64Url(buffer) {
-            const bytes = new Uint8Array(buffer);
-            let binary = '';
-            bytes.forEach(byte => { binary += String.fromCharCode(byte); });
-            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-        }
-
-        function base64UrlToBytes(value) {
-            const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
-            const padding = '='.repeat((4 - normalized.length % 4) % 4);
-            const binary = atob(normalized + padding);
-            return Uint8Array.from(binary, char => char.charCodeAt(0));
-        }
-
-        async function hashPin(pin) {
-            const bytes = new TextEncoder().encode(String(pin));
-            const digest = await crypto.subtle.digest('SHA-256', bytes);
-            return bytesToBase64Url(digest);
-        }
-
-        async function verifyAppPin(pin) {
-            if(!/^\d{4}$/.test(String(pin))) return false;
-            const security = ensureSecurityShape();
-            if(!security.pinHash) return String(pin) === '0000';
-            return (await hashPin(pin)) === security.pinHash;
-        }
-
-        async function ensureSecurityInitialized(options = {}) {
-            const security = ensureSecurityShape();
-            if(security.pinHash || securityInitializationInProgress) return;
-            securityInitializationInProgress = true;
-            try {
-                security.pinHash = await hashPin('0000');
-                security.pinUpdatedAt = Date.now();
-                saveLocalOnly();
-                if(options.save !== false && firebaseRootRef) await saveDB({ silent: true });
-            } finally {
-                securityInitializationInProgress = false;
-            }
-        }
-
-        function lockAppUI() {
-            appUnlocked = false;
-            document.body.classList.add('app-is-locked');
-            const screen = document.getElementById('app-lock-screen');
-            if(screen) screen.classList.remove('unlocked');
-            updateLockBiometricUI();
-        }
-
-        function unlockAppUI() {
-            appUnlocked = true;
-            document.body.classList.remove('app-is-locked');
-            const screen = document.getElementById('app-lock-screen');
-            if(screen) screen.classList.add('unlocked');
-            closePinLoginModal();
-        }
-
-        function openPinLoginModal() {
-            const modal = document.getElementById('pin-login-modal');
-            if(!modal) return;
-            clearPinInputs();
-            modal.classList.remove('hidden');
-            setTimeout(() => document.querySelector('.pin-digit')?.focus(), 60);
-        }
-
-        function closePinLoginModal() {
-            const modal = document.getElementById('pin-login-modal');
-            if(modal) modal.classList.add('hidden');
-            clearPinInputs();
-        }
-
-        function clearPinInputs() {
-            document.querySelectorAll('.pin-digit').forEach(input => { input.value = ''; });
-            const error = document.getElementById('pin-login-error');
-            if(error) error.classList.add('hidden');
-        }
-
-        function setupPinInputs() {
-            const inputs = Array.from(document.querySelectorAll('.pin-digit'));
-            inputs.forEach((input, index) => {
-                input.addEventListener('input', event => {
-                    const digit = String(event.target.value || '').replace(/\D/g, '').slice(-1);
-                    event.target.value = digit;
-                    if(digit && inputs[index + 1]) inputs[index + 1].focus();
-                    if(digit && index === inputs.length - 1) submitPinLogin();
-                });
-                input.addEventListener('keydown', event => {
-                    if(event.key === 'Backspace' && !input.value && inputs[index - 1]) inputs[index - 1].focus();
-                    if(event.key === 'Enter') submitPinLogin();
-                });
-                input.addEventListener('paste', event => {
-                    event.preventDefault();
-                    const digits = (event.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 4);
-                    digits.split('').forEach((digit, position) => { if(inputs[position]) inputs[position].value = digit; });
-                    if(digits.length === 4) submitPinLogin();
-                    else inputs[Math.min(digits.length, inputs.length - 1)]?.focus();
-                });
-            });
-        }
-
-        async function submitPinLogin() {
-            const inputs = Array.from(document.querySelectorAll('.pin-digit'));
-            const pin = inputs.map(input => input.value).join('');
-            const error = document.getElementById('pin-login-error');
-            if(pin.length !== 4) {
-                if(error) {
-                    error.innerText = 'أدخل الأرقام الأربعة';
-                    error.classList.remove('hidden');
-                }
-                return;
-            }
-            try {
-                if(await verifyAppPin(pin)) {
-                    unlockAppUI();
-                    return;
-                }
-            } catch(authenticationError) {
-                console.error('PIN verification error:', authenticationError);
-            }
-            if(error) {
-                error.innerText = 'رمز القفل غير صحيح';
-                error.classList.remove('hidden');
-            }
-            inputs.forEach(input => { input.value = ''; });
-            inputs[0]?.focus();
-        }
-
-        function isBiometricContextSupported() {
-            return Boolean(window.isSecureContext && window.PublicKeyCredential && navigator.credentials);
-        }
-
-        async function hasPlatformBiometricAuthenticator() {
-            if(!isBiometricContextSupported()) return false;
-            if(typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== 'function') return true;
-            try {
-                return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-            } catch(error) {
-                return false;
-            }
-        }
-
-        function updateLockBiometricUI() {
-            const button = document.getElementById('lock-biometric-btn');
-            const hint = document.getElementById('lock-biometric-hint');
-            if(!button) return;
-            const security = ensureSecurityShape();
-            const credentialId = security.biometricCredentials[getDeviceId()];
-            const enabled = Boolean(security.biometricEnabled && credentialId && isBiometricContextSupported());
-            button.disabled = !enabled;
-            button.classList.toggle('is-disabled', !enabled);
-            if(hint) {
-                if(enabled) hint.innerText = 'يمكنك الدخول باستخدام بصمة الجهاز';
-                else if(!isBiometricContextSupported()) hint.innerText = 'البصمة تحتاج فتح التطبيق من رابط HTTPS';
-                else hint.innerText = 'يمكن تفعيل البصمة من الإعدادات';
-            }
-        }
-
-        function updateBiometricSettingsStatus(message = '') {
-            const status = document.getElementById('biometric-settings-status');
-            if(!status) return;
-            if(message) {
-                status.innerText = message;
-                return;
-            }
-            const security = ensureSecurityShape();
-            const registered = Boolean(security.biometricCredentials[getDeviceId()]);
-            if(registered && security.biometricEnabled) status.innerText = 'البصمة مفعلة على هذا الجهاز ومحفوظ تفعيلها في Firebase.';
-            else if(!isBiometricContextSupported()) status.innerText = 'لتفعيل البصمة افتح التطبيق من رابط HTTPS أو من التطبيق المثبت.';
-            else status.innerText = 'البصمة غير مفعلة على هذا الجهاز.';
-        }
-
-        async function changeAppPin() {
-            const currentPin = document.getElementById('set-current-pin')?.value.trim() || '';
-            const newPin = document.getElementById('set-new-pin')?.value.trim() || '';
-            const confirmPin = document.getElementById('set-confirm-pin')?.value.trim() || '';
-            if(!/^\d{4}$/.test(currentPin) || !/^\d{4}$/.test(newPin)) {
-                showToast('رمز القفل يجب أن يكون 4 أرقام', 'error');
-                return;
-            }
-            if(newPin !== confirmPin) {
-                showToast('تأكيد رمز القفل غير مطابق', 'error');
-                return;
-            }
-            if(!(await verifyAppPin(currentPin))) {
-                showToast('رمز القفل الحالي غير صحيح', 'error');
-                return;
-            }
-            const security = ensureSecurityShape();
-            security.pinHash = await hashPin(newPin);
-            security.pinUpdatedAt = Date.now();
-            const synced = await saveDB();
-            ['set-current-pin', 'set-new-pin', 'set-confirm-pin'].forEach(id => {
-                const input = document.getElementById(id);
-                if(input) input.value = '';
-            });
-            showToast(synced ? 'تم تغيير رمز القفل وحفظه في Firebase' : 'تم تغيير رمز القفل محلياً وسيُزامن لاحقاً');
-        }
-
-        async function registerBiometricCredential() {
-            if(!(await hasPlatformBiometricAuthenticator())) {
-                throw new Error('لا توجد بصمة مدعومة أو أن التطبيق ليس على HTTPS');
-            }
-            const deviceId = getDeviceId();
-            const credential = await navigator.credentials.create({
-                publicKey: {
-                    challenge: randomBytes(32),
-                    rp: { name: db.settings.companyName || 'WATAN PLS LTD' },
-                    user: {
-                        id: randomBytes(16),
-                        name: `watan-${deviceId}`,
-                        displayName: db.settings.companyName || 'WATAN PLS LTD'
-                    },
-                    pubKeyCredParams: [
-                        { type: 'public-key', alg: -7 },
-                        { type: 'public-key', alg: -257 }
-                    ],
-                    timeout: 60000,
-                    attestation: 'none',
-                    authenticatorSelection: {
-                        authenticatorAttachment: 'platform',
-                        residentKey: 'preferred',
-                        userVerification: 'required'
-                    }
-                }
-            });
-            if(!credential) throw new Error('لم يتم إنشاء اعتماد البصمة');
-            const security = ensureSecurityShape();
-            security.biometricCredentials[deviceId] = bytesToBase64Url(credential.rawId);
-            security.biometricEnabled = true;
-            await saveDB();
-            return true;
-        }
-
-        async function saveBiometricSetting() {
-            const checkbox = document.getElementById('set-biometric-enabled');
-            if(!checkbox) return;
-            const security = ensureSecurityShape();
-            const deviceId = getDeviceId();
-            try {
-                if(checkbox.checked) {
-                    updateBiometricSettingsStatus('انتظر تأكيد بصمة الجهاز...');
-                    await registerBiometricCredential();
-                    updateBiometricSettingsStatus('تم تفعيل البصمة على هذا الجهاز وحفظ الإعداد في Firebase.');
-                    showToast('تم تفعيل الدخول بالبصمة');
-                } else {
-                    delete security.biometricCredentials[deviceId];
-                    security.biometricEnabled = Object.keys(security.biometricCredentials).length > 0;
-                    await saveDB();
-                    updateBiometricSettingsStatus('تم إلغاء البصمة من هذا الجهاز.');
-                    showToast('تم إلغاء الدخول بالبصمة من هذا الجهاز');
-                }
-            } catch(error) {
-                console.error('Biometric registration error:', error);
-                checkbox.checked = Boolean(security.biometricCredentials[deviceId]);
-                updateBiometricSettingsStatus(error.message || 'تعذر تفعيل البصمة');
-                showToast(error.message || 'تعذر تفعيل البصمة', 'error');
-            }
-            updateLockBiometricUI();
-        }
-
-        async function authenticateWithBiometric() {
-            const security = ensureSecurityShape();
-            const credentialId = security.biometricCredentials[getDeviceId()];
-            if(!security.biometricEnabled || !credentialId) {
-                showToast('فعّل البصمة أولاً من الإعدادات', 'error');
-                return;
-            }
-            if(!isBiometricContextSupported()) {
-                showToast('البصمة تحتاج رابط HTTPS أو تطبيقاً مثبتاً', 'error');
-                return;
-            }
-            try {
-                const assertion = await navigator.credentials.get({
-                    publicKey: {
-                        challenge: randomBytes(32),
-                        allowCredentials: [{
-                            type: 'public-key',
-                            id: base64UrlToBytes(credentialId)
-                        }],
-                        timeout: 60000,
-                        userVerification: 'required'
-                    }
-                });
-                if(assertion) unlockAppUI();
-            } catch(error) {
-                console.error('Biometric authentication error:', error);
-                showToast('لم يتم التحقق من البصمة', 'error');
-            }
-        }
-
         // ================= PWA INSTALLATION =================
         let deferredInstallPrompt = null;
 
@@ -1349,9 +1767,9 @@ let defaultCurrencies = [
         }
 
         window.addEventListener('load', async () => {
-            setupPinInputs();
-            lockAppUI();
+            resetLocalDataForRequiredVersion();
+            readMarketRatesCache();
             init();
+            refreshGlobalMarketRates(false);
             await bootstrapFirebase();
-            updateLockBiometricUI();
         });

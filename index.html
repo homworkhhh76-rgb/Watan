@@ -402,13 +402,17 @@
             <h2 class="text-2xl font-bold text-slate-800 mb-6">إدارة الشيكات</h2>
             <div class="bg-white rounded-xl shadow p-6">
                 <form id="check-form" class="space-y-5">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div>
                             <label class="block text-sm text-slate-600 mb-1">تأثير الصندوق</label>
                             <select id="chk-type" class="w-full border rounded p-2 font-bold bg-slate-50">
                                 <option value="out">إصدار شيك (منصرف / خصم من الصندوق)</option>
                                 <option value="in">استلام شيك (وارد / إضافة للصندوق)</option>
                             </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-600 mb-1">رقم الحركة</label>
+                            <input type="text" id="chk-ref" readonly class="w-full border rounded p-2 text-center font-mono bg-slate-100">
                         </div>
                         <div>
                             <label class="block text-sm text-slate-600 mb-1">رقم الشيك</label>
@@ -550,7 +554,6 @@
                     </div>
                 </div>
 
-
                 <div class="bg-white p-6 rounded shadow md:col-span-2">
                     <h3 class="font-bold border-b pb-2 mb-4"><i class="fas fa-shield-alt text-blue-600"></i> قفل التطبيق والدخول السريع</h3>
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -577,7 +580,7 @@
                                 <input type="checkbox" id="set-biometric-enabled" class="w-5 h-5 accent-blue-600">
                                 <span>تفعيل الدخول بالبصمة على هذا الجهاز</span>
                             </label>
-                            <p id="biometric-settings-status" class="text-xs text-slate-500 mt-2">سيتم حفظ التفعيل ومعرّف الجهاز في Firebase، بينما تبقى بيانات البصمة داخل الهاتف.</p>
+                            <p id="biometric-settings-status" class="text-xs text-slate-500 mt-2">البصمة تحتاج تشغيل التطبيق من رابط HTTPS أو من التطبيق المثبت.</p>
                         </div>
                         <button type="button" onclick="saveBiometricSetting()" class="bg-slate-900 hover:bg-black text-white px-5 py-3 rounded font-bold whitespace-nowrap">
                             <i class="fas fa-fingerprint"></i> حفظ إعداد البصمة
@@ -667,6 +670,7 @@
         <script src="firebase-config.js"></script>
     <script src="local-db.js"></script>
     <script src="app.js"></script>
+    <script src="lock.js"></script>
 
 </body>
 </html>
