@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WATAN PLS LTD - نظام الصرافة والحوالات</title>
+
+    <meta name="theme-color" content="#0f172a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="WATAN">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" href="logo.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="flex overflow-hidden h-screen text-gray-800">
+    <noscript><div style="position:fixed;inset:0;z-index:99999;background:white;padding:2rem;text-align:center;font-weight:bold">يجب تفعيل JavaScript لتشغيل التطبيق.</div></noscript>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+    <!-- Mobile Header -->
+    <div class="md:hidden fixed top-0 w-full bg-slate-900 text-white p-4 flex justify-between items-center z-30 shadow-md">
+        <h1 class="text-base font-bold flex items-center gap-2">
+            <img class="logo-img hidden h-8 w-8 rounded object-contain shadow-sm bg-white" src="" alt="Logo">
+            <span class="pr-company-name">Cash Top</span>
+        </h1>
+        <button onclick="toggleSidebar()" class="text-2xl focus:outline-none"><i class="fas fa-bars"></i></button>
+    </div>
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar w-64 text-slate-300 fixed h-full z-40 overflow-y-auto right-0 top-0 pt-16 md:pt-0 pb-12">
+        <div class="hidden md:flex p-6 items-center justify-center bg-slate-900 border-b border-slate-700">
+            <h1 class="text-white text-lg font-black flex items-center gap-3 tracking-wide">
+                <img class="logo-img hidden h-12 w-12 rounded-full object-contain shadow bg-white border border-slate-500" src="" alt="Logo">
+                <span class="pr-company-name">Cash Top</span>
+            </h1>
+        </div>
+        <div class="bg-yellow-500 text-slate-900 text-center py-3 font-bold text-sm shadow-inner cursor-pointer hover:bg-yellow-400 transition" onclick="switchTab('dashboard')">
+            <i class="fas fa-plus-circle"></i> عملية جديدة
+        </div>
+        <nav>
+            <a href="#" onclick="switchTab('dashboard')" id="nav-dashboard" class="sidebar-item active flex items-center py-4 px-6 font-semibold">
+                <i class="fas fa-home ml-3 w-5 text-center"></i> العمليات
+            </a>
+            <a href="#" onclick="switchTab('reports')" id="nav-reports" class="sidebar-item flex items-center py-4 px-6 font-semibold">
+                <i class="fas fa-book ml-3 w-5 text-center"></i> الصندوق والسجل
+            </a>
+            <a href="#" onclick="switchTab('transfers')" id="nav-transfers" class="sidebar-item flex items-center py-4 px-6 font-semibold">
+                <i class="fas fa-paper-plane ml-3 w-5 text-center"></i> الحوالات التفصيلية
+            </a>
+            <a href="#" onclick="switchTab('checks')" id="nav-checks" class="sidebar-item flex items-center py-4 px-6 font-semibold">
+                <i class="fas fa-money-check-alt ml-3 w-5 text-center"></i> الشيكات
+            </a>
+            <a href="#" onclick="switchTab('clients')" id="nav-clients" class="sidebar-item flex items-center py-4 px-6 font-semibold">
+                <i class="fas fa-users ml-3 w-5 text-center"></i> العملاء
+            </a>
+            <a href="#" onclick="switchTab('rates')" id="nav-rates" class="sidebar-item flex items-center py-4 px-6 font-semibold">
+                <i class="fas fa-exchange-alt ml-3 w-5 text-center"></i> أسعار الصرف
+            </a>
+            <a href="#" onclick="switchTab('settings')" id="nav-settings" class="sidebar-item flex items-center py-4 px-6 font-semibold mt-4">
+                <i class="fas fa-cog ml-3 w-5 text-center"></i> الإعدادات
+            </a>
+
+            <a href="#" onclick="installApp(); return false;" id="install-app-btn" class="sidebar-item hidden flex items-center py-4 px-6 font-semibold text-green-300">
+                <i class="fas fa-download ml-3 w-5 text-center"></i> تثبيت التطبيق
+            </a>
+        </nav>
+    </aside>
+
+    <div id="sidebar-overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-black bg-opacity-50 z-30 hidden md:hidden"></div>
+
+    <!-- Main Content -->
+    <main class="main-content flex-1 md:mr-64 p-2 md:p-6 mt-16 md:mt-0 h-screen overflow-y-auto w-full transition-all duration-300 pb-32">
+        
+        <!-- ================= DASHBOARD TAB ================= -->
+        <section id="dashboard" class="tab-content block max-w-7xl mx-auto">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-white rounded-lg p-4 shadow flex items-center justify-between border-t-4 border-green-500">
+                    <div>
+                        <p class="text-xs text-slate-500 font-bold">عدد العمليات اليوم</p>
+                        <h3 class="text-2xl font-black text-slate-800" id="stat-count">0</h3>
+                        <p class="text-xs text-slate-400">عملية</p>
+                    </div>
+                    <div class="bg-green-100 text-green-600 p-3 rounded-full"><i class="fas fa-file-invoice fa-lg"></i></div>
+                </div>
+                <div class="bg-white rounded-lg p-4 shadow flex items-center justify-between border-t-4 border-blue-500">
+                    <div>
+                        <p class="text-xs text-slate-500 font-bold">إجمالي المنصرف (صادر)</p>
+                        <h3 class="text-xl font-black text-blue-600" id="stat-out">0.00</h3>
+                        <p class="text-xs text-slate-400">دولار (USD)</p>
+                    </div>
+                    <div class="bg-blue-100 text-blue-600 p-3 rounded-full"><i class="fas fa-paper-plane fa-lg"></i></div>
+                </div>
+                <div class="bg-white rounded-lg p-4 shadow flex items-center justify-between border-t-4 border-purple-500">
+                    <div>
+                        <p class="text-xs text-slate-500 font-bold">إجمالي الوارد (استلام)</p>
+                        <h3 class="text-xl font-black text-purple-600" id="stat-in">0.00</h3>
+                        <p class="text-xs text-slate-400">دولار (USD)</p>
+                    </div>
+                    <div class="bg-purple-100 text-purple-600 p-3 rounded-full"><i class="fas fa-download fa-lg"></i></div>
+                </div>
+                <div class="bg-white rounded-lg p-4 shadow flex items-center justify-between border-t-4 border-yellow-500">
+                    <div>
+                        <p class="text-xs text-slate-500 font-bold">رصيد الصندوق (دولار)</p>
+                        <h3 class="text-xl font-black text-yellow-600" id="stat-balance" dir="ltr">0.00</h3>
+                        <p class="text-xs text-slate-400">الرصيد الفعلي للمركز</p>
+                    </div>
+                    <div class="bg-yellow-100 text-yellow-600 p-3 rounded-full"><i class="fas fa-box fa-lg"></i></div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                <!-- Center/Right Col: New Operation (توسعة الحجم بعد نقل الأسعار) -->
+                <div class="lg:col-span-9 bg-white rounded-lg shadow overflow-hidden h-fit">
+                    <div class="bg-slate-900 text-white p-3 text-center font-bold text-lg">عملية جديدة</div>
+                    <div class="p-6">
+                        <form id="quick-form" class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4 items-end">
+                                <div class="relative flex flex-col justify-end">
+                                    <span class="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400"><i class="fas fa-hashtag"></i></span>
+                                    <input type="text" id="q-ref" readonly class="w-full h-11 border rounded p-2 pr-10 bg-slate-50 text-center font-mono">
+                                </div>
+                                <div class="relative flex flex-col justify-end">
+                                    <span class="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400"><i class="fas fa-calendar"></i></span>
+                                    <input type="date" id="q-date" class="w-full h-11 border rounded p-2 pr-10 text-center">
+                                </div>
+                            </div>
+                            
+                            <div class="relative">
+                                <span class="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400"><i class="fas fa-user"></i></span>
+                                <input type="text" id="q-client" required placeholder="اختر أو اكتب اسم العميل" class="w-full h-11 border rounded p-2 pr-10">
+                            </div>
+
+                            <div class="relative">
+                                <span class="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400"><i class="fas fa-exchange-alt"></i></span>
+                                <select id="q-type" class="w-full h-11 border rounded p-2 pr-10 font-bold" onchange="updateQuickFormColors()">
+                                    <option value="in">استلام (وارد لصالح المركز)</option>
+                                    <option value="out">إرسال / صرف (صادر من المركز)</option>
+                                </select>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="flex flex-col justify-end">
+                                    <label class="text-xs text-slate-500 mb-1 block">العملة</label>
+                                    <select id="q-currency" class="w-full h-11 border rounded p-2 dynamic-currencies" onchange="triggerQSync()"></select>
+                                </div>
+                                <div class="flex flex-col justify-end">
+                                    <label class="text-xs text-slate-500 mb-1 block">سعر الصرف (للـ 100)</label>
+                                    <input type="number" step="0.0001" id="q-rate" class="w-full h-11 border rounded p-2 bg-yellow-50 text-center font-bold text-blue-700" oninput="handleQAmount()">
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-4 border rounded">
+                                <div>
+                                    <label class="text-xs font-bold text-slate-800 mb-1 block">المبلغ (بالعملة المحددة)</label>
+                                    <input type="number" step="0.01" id="q-amount" required class="w-full h-11 border border-slate-300 rounded p-2 font-bold text-lg text-center" oninput="handleQAmount()">
+                                </div>
+                                <div>
+                                    <label class="text-xs font-bold text-slate-800 mb-1 block">المكافئ (شيكل) للقبض/الصرف</label>
+                                    <input type="number" step="0.01" id="q-ils" required class="w-full h-11 bg-white border border-slate-300 rounded p-2 font-black text-center text-indigo-900" oninput="handleQIls()">
+                                    
+                                    <div class="mt-2 flex items-center justify-start gap-2">
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="q-sync" checked onchange="handleQAmount()" class="sr-only">
+                                            <div class="toggle-switch"></div>
+                                        </label>
+                                        <span class="text-xs font-bold text-slate-600">تتابع السعر تلقائياً</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <input type="text" id="q-notes" placeholder="اكتب ملاحظات إذا وجدت..." class="w-full h-11 border rounded p-2 text-sm">
+                            </div>
+
+                            <div class="flex flex-col md:flex-row gap-2 pt-4">
+                                <button type="button" class="w-full md:w-1/4 bg-red-600 hover:bg-red-700 text-white rounded font-bold py-3 md:py-2 transition" onclick="cancelQuickForm()"><i class="fas fa-times"></i> إلغاء</button>
+                                <button type="button" onclick="saveQuickOperation(true)" class="w-full md:w-1/4 bg-slate-800 hover:bg-slate-900 text-white rounded font-bold py-3 md:py-2 transition"><i class="fas fa-print"></i> طباعة</button>
+                                <button type="button" onclick="saveQuickOperation(false)" class="w-full md:w-1/2 bg-green-600 hover:bg-green-700 text-white rounded py-3 font-bold transition shadow-lg"><i class="fas fa-save"></i> حفظ العملية</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Left Col: Company Info + Rates -->
+                <div class="lg:col-span-3 space-y-6">
+                    <!-- Company Info Card -->
+                    <div class="bg-white rounded-lg shadow p-4 text-center border-b-4 border-yellow-500 hidden md:block">
+                        <div class="mx-auto flex items-center justify-center mb-3">
+                            <img class="logo-img hidden h-28 w-28 rounded-full object-contain border-4 border-yellow-500 bg-white" src="" alt="Logo">
+                            <div class="logo-img-placeholder w-28 h-28 bg-slate-100 rounded-full flex items-center justify-center border-4 border-yellow-500">
+                                <h2 class="text-3xl font-black text-slate-900" style="line-height: 1;">CT</h2>
+                            </div>
+                        </div>
+                        <h3 class="font-black text-xl text-slate-800 pr-company-name">Cash Top</h3>
+                        <p class="text-xs text-slate-500 mb-2 mt-1">للصرافة والحوالات المالية</p>
+                        <p class="text-sm font-bold bg-slate-100 py-1 rounded inline-block px-3"><i class="fas fa-phone text-slate-400"></i> <span id="pr-comp-phone"></span></p>
+                    </div>
+
+                    <!-- Rates Section (Moved under the card) -->
+                    <div class="bg-white rounded-lg shadow overflow-hidden">
+                        <div class="bg-slate-50 p-3 border-b text-center font-bold text-slate-800"><i class="fas fa-chart-line text-blue-500"></i> أسعار الصرف (لكل 100)</div>
+                        <div class="p-4 space-y-3" id="dash-rates"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= REPORTS & CASHBOX TAB ================= -->
+        <section id="reports" class="tab-content hidden max-w-7xl mx-auto">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                <h2 class="text-2xl font-bold text-slate-800"><i class="fas fa-box text-yellow-500"></i> صندوق المركز والسجل العام (بالدولار)</h2>
+                
+                <div class="flex gap-2 w-full md:w-auto">
+                    <button onclick="exportReportsExcel()" class="flex-1 md:flex-none bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded shadow font-bold transition flex items-center justify-center gap-2"><i class="fas fa-file-excel"></i> إكسل</button>
+                    <button onclick="exportReportsPDF()" class="flex-1 md:flex-none bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded shadow font-bold transition flex items-center justify-center gap-2"><i class="fas fa-file-pdf"></i> PDF</button>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow p-4 mb-4 flex flex-col md:flex-row gap-4 items-end justify-between border border-slate-200">
+                <div class="w-full md:w-1/3">
+                    <label class="text-xs font-bold text-slate-500 mb-1 block"><i class="fas fa-search"></i> بحث في السجل</label>
+                    <input type="text" id="rep-search" placeholder="بحث بالاسم، رقم المرجع..." class="w-full border border-slate-300 rounded p-2 outline-none focus:border-blue-500 bg-slate-50" oninput="renderReports()">
+                </div>
+                
+                <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+                    <span id="active-filter-text" class="text-sm font-bold text-blue-800 bg-blue-100 px-3 py-2 rounded border border-blue-200 hidden"></span>
+                    <button onclick="openFilterModal()" class="bg-slate-800 hover:bg-black text-white px-4 py-2 rounded font-bold shadow transition flex items-center gap-2"><i class="fas fa-filter text-yellow-400"></i> تصفية التاريخ</button>
+                    <button onclick="resetFilters()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded font-bold transition" title="إلغاء التصفية"><i class="fas fa-sync"></i></button>
+                </div>
+            </div>
+
+            <div class="bg-white shadow rounded-lg overflow-x-auto border border-slate-200">
+                <table class="w-full text-sm ledger-table" id="reports-table">
+                    <thead>
+                        <tr>
+                            <th class="w-24">التاريخ</th>
+                            <th>التفاصيل (العميل والمرجع)</th>
+                            <th class="w-32 bg-green-600">وارد (دولار)</th>
+                            <th class="w-32 bg-red-600">منصرف (دولار)</th>
+                            <th class="w-32 bg-slate-800">الرصيد (USD)</th>
+                            <th class="w-40 no-print">تنزيل الوصل</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reports-body"></tbody>
+                    <tfoot class="bg-slate-100 font-black text-lg border-t-2 border-black">
+                        <tr>
+                            <td colspan="2" class="text-left text-slate-600 p-3">إجماليات الفترة الظاهرة:</td>
+                            <td id="tot-in" class="text-green-700 text-center">0.00</td>
+                            <td id="tot-out" class="text-red-700 text-center">0.00</td>
+                            <td id="tot-diff" class="bg-slate-200 text-center" dir="ltr">0.00</td>
+                            <td class="no-print"></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </section>
+
+        <!-- ================= TRANSFERS TAB ================= -->
+        <section id="transfers" class="tab-content hidden max-w-5xl mx-auto">
+            <h2 class="text-2xl font-bold text-slate-800 mb-6">إصدار حوالة مفصلة</h2>
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="bg-slate-900 text-white p-4 font-bold text-lg text-center border-b-4 border-yellow-500">
+                    نموذج حوالة مالية دولية/محلية
+                </div>
+                <div class="p-4 md:p-6">
+                    <form id="transfer-form" class="space-y-6">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pb-4 border-b">
+                            <div>
+                                <label class="text-xs text-slate-500">نوع الحوالة (تأثير المركز)</label>
+                                <select id="tr-type" class="w-full h-11 border rounded p-2 font-bold text-indigo-900">
+                                    <option value="out">حوالة صادرة (منصرف من المركز)</option>
+                                    <option value="in">حوالة واردة (وارد لصالح المركز)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500">الوكيل / الشركة المراسلة</label>
+                                <input type="text" id="tr-agent" class="w-full h-11 border rounded p-2" required>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500">رقم الحوالة المرجعي</label>
+                                <input type="text" id="tr-ref" class="w-full h-11 border rounded p-2 text-center font-mono bg-slate-100" readonly>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div class="space-y-3 bg-slate-50 p-4 rounded border border-slate-200">
+                                <h3 class="font-bold text-slate-800 border-b pb-2"><i class="fas fa-user-export"></i> معلومات المرسل</h3>
+                                <input type="text" id="tr-sender-name" placeholder="اسم المرسل (العميل)" required class="w-full border rounded p-2">
+                                <div class="grid grid-cols-2 gap-2">
+                                    <input type="text" id="tr-sender-phone" placeholder="رقم الهاتف" class="w-full border rounded p-2">
+                                    <input type="text" id="tr-sender-id" placeholder="رقم الهوية/الجواز" class="w-full border rounded p-2">
+                                </div>
+                            </div>
+                            <div class="space-y-3 bg-slate-50 p-4 rounded border border-slate-200">
+                                <h3 class="font-bold text-slate-800 border-b pb-2"><i class="fas fa-user-import"></i> معلومات المستلم</h3>
+                                <input type="text" id="tr-receiver-name" placeholder="اسم المستلم" required class="w-full border rounded p-2">
+                                <div class="grid grid-cols-2 gap-2">
+                                    <input type="text" id="tr-receiver-country" placeholder="بلد الاستلام" class="w-full border rounded p-2">
+                                    <input type="text" id="tr-receiver-phone" placeholder="هاتف المستلم" class="w-full border rounded p-2">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-blue-50 p-4 rounded border border-blue-200">
+                            <h3 class="font-bold text-blue-900 mb-3"><i class="fas fa-coins"></i> التفاصيل المالية للحوالة</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+                                <div>
+                                    <label class="text-xs text-slate-600 block mb-1">العملة</label>
+                                    <select id="tr-currency" class="w-full h-11 border rounded p-2 dynamic-currencies" onchange="triggerTrSync()"></select>
+                                </div>
+                                <div>
+                                    <label class="text-xs text-slate-600 block mb-1">السعر (لكل 100)</label>
+                                    <input type="number" id="tr-rate" class="w-full h-11 border rounded p-2 font-bold text-blue-700 text-center" oninput="handleTrAmount()">
+                                </div>
+                                <div>
+                                    <label class="text-xs text-slate-600 block mb-1">مبلغ الحوالة + العمولة</label>
+                                    <input type="number" id="tr-amount" required class="w-full h-11 border border-slate-300 rounded p-2 font-bold text-lg text-center" oninput="handleTrAmount()">
+                                </div>
+                                <div class="md:col-span-2 flex flex-col justify-end">
+                                    <label class="text-xs font-bold text-slate-800 block mb-1">المكافئ (شيكل) للقبض/الصرف</label>
+                                    <input type="number" step="0.01" id="tr-ils" required class="w-full h-11 bg-white border border-slate-300 rounded p-2 font-black text-center text-red-700" oninput="handleTrIls()">
+                                    
+                                    <div class="mt-2 flex items-center justify-start gap-2">
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="tr-sync" checked onchange="handleTrAmount()" class="sr-only">
+                                            <div class="toggle-switch"></div>
+                                        </label>
+                                        <span class="text-xs font-bold text-slate-600">تتابع السعر تلقائياً</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col md:flex-row gap-4 mt-6">
+                            <button type="button" onclick="saveTransfer(false)" class="w-full md:w-1/3 bg-green-600 hover:bg-green-700 text-white font-bold py-4 md:py-3 rounded-lg shadow-md transition">حفظ بالسجل</button>
+                            <button type="button" onclick="saveTransfer(true)" class="w-full md:w-2/3 bg-slate-900 hover:bg-black text-white font-bold py-4 md:py-3 rounded-lg shadow-md flex items-center justify-center gap-2 transition"><i class="fas fa-print"></i> حفظ وطباعة إيصال</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= CHECKS TAB ================= -->
+        <section id="checks" class="tab-content hidden max-w-4xl mx-auto">
+            <h2 class="text-2xl font-bold text-slate-800 mb-6">إدارة الشيكات</h2>
+            <div class="bg-white rounded-xl shadow p-6">
+                <form id="check-form" class="space-y-5">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm text-slate-600 mb-1">تأثير الصندوق</label>
+                            <select id="chk-type" class="w-full border rounded p-2 font-bold bg-slate-50">
+                                <option value="out">إصدار شيك (منصرف / خصم من الصندوق)</option>
+                                <option value="in">استلام شيك (وارد / إضافة للصندوق)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-600 mb-1">رقم الشيك</label>
+                            <input type="text" id="chk-no" class="w-full border rounded p-2" required>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div>
+                            <label class="block text-sm text-slate-600 mb-1">المستفيد / صاحب الشيك</label>
+                            <input type="text" id="chk-client" class="w-full border rounded p-2" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-600 mb-1">البنك</label>
+                            <input type="text" id="chk-bank" class="w-full border rounded p-2" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-600 mb-1">تاريخ الاستحقاق</label>
+                            <input type="date" id="chk-due" class="w-full border rounded p-2 font-bold text-red-600" required>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-yellow-50 p-4 rounded border items-end">
+                        <div class="flex flex-col justify-end">
+                            <label class="block text-sm text-slate-600 mb-1">العملة</label>
+                            <select id="chk-currency" class="w-full h-11 border rounded p-2 dynamic-currencies" onchange="triggerChkSync()"></select>
+                        </div>
+                        <div class="flex flex-col justify-end">
+                            <label class="block text-sm text-slate-600 mb-1">السعر(للـ 100)</label>
+                            <input type="number" id="chk-rate" class="w-full h-11 border rounded p-2 font-bold text-blue-700 text-center" oninput="handleChkAmount()">
+                        </div>
+                        <div class="flex flex-col justify-end">
+                            <label class="block text-sm text-slate-600 mb-1">قيمة الشيك</label>
+                            <input type="number" id="chk-amount" class="w-full h-11 border rounded p-2 font-bold text-lg text-center" required oninput="handleChkAmount()">
+                        </div>
+                        <div class="flex flex-col justify-end">
+                            <label class="text-xs font-bold text-slate-800 block mb-1">المكافئ (شيكل)</label>
+                            <input type="number" step="0.01" id="chk-ils" required class="w-full h-11 border rounded p-2 font-black text-center bg-white" oninput="handleChkIls()">
+                            
+                            <div class="mt-2 flex items-center justify-start gap-2">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="chk-sync" checked onchange="handleChkAmount()" class="sr-only">
+                                    <div class="toggle-switch"></div>
+                                </label>
+                                <span class="text-xs font-bold text-slate-600">تتابع السعر</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-600 mb-1">بيان</label>
+                        <input type="text" id="chk-notes" class="w-full border rounded p-2">
+                    </div>
+                    <div class="flex flex-col md:flex-row gap-4 pt-4 border-t">
+                        <button type="button" onclick="saveCheck(false)" class="w-full md:w-1/3 bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 md:py-3 rounded-lg">حفظ بالسجل</button>
+                        <button type="button" onclick="saveCheck(true)" class="w-full md:w-2/3 bg-slate-900 hover:bg-black text-white font-bold py-4 md:py-3 rounded-lg"><i class="fas fa-print"></i> حفظ وطباعة</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <!-- ================= CLIENTS & RATES TAB ================= -->
+        <section id="clients" class="tab-content hidden max-w-6xl mx-auto">
+            <h2 class="text-2xl font-bold text-slate-800 mb-6">إدارة العملاء</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Form -->
+                <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
+                    <h3 class="font-bold text-slate-800 mb-4 border-b pb-2"><i class="fas fa-user-plus text-blue-500"></i> إضافة عميل جديد</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="text-sm text-slate-600">اسم العميل</label>
+                            <input type="text" id="cl-name" class="w-full border rounded p-2 outline-none focus:border-blue-500">
+                        </div>
+                        <div>
+                            <label class="text-sm text-slate-600">رقم الهاتف</label>
+                            <input type="text" id="cl-phone" class="w-full border rounded p-2 outline-none focus:border-blue-500">
+                        </div>
+                        <div>
+                            <label class="text-sm text-slate-600">رقم الهوية / الجواز</label>
+                            <input type="text" id="cl-id" class="w-full border rounded p-2 outline-none focus:border-blue-500">
+                        </div>
+                        <button onclick="addClient()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded shadow transition-colors">حفظ العميل</button>
+                    </div>
+                </div>
+                <!-- List -->
+                <div class="lg:col-span-2 bg-white p-0 rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-4 bg-slate-50 border-b font-bold text-slate-800 flex justify-between items-center">
+                        <span><i class="fas fa-list"></i> قائمة العملاء</span>
+                    </div>
+                    <div class="overflow-x-auto h-[500px] overflow-y-auto">
+                        <table class="w-full text-sm text-right">
+                            <thead class="bg-slate-100 text-slate-600 sticky top-0">
+                                <tr>
+                                    <th class="p-3">اسم العميل</th>
+                                    <th class="p-3">رقم الهاتف</th>
+                                    <th class="p-3">رقم الهوية</th>
+                                    <th class="p-3">تاريخ الإضافة</th>
+                                </tr>
+                            </thead>
+                            <tbody id="clients-list"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="rates" class="tab-content hidden max-w-3xl mx-auto">
+            <h2 class="text-2xl font-bold text-slate-800 mb-6">أسعار الصرف (كل 100 عملة = كم شيكل؟)</h2>
+            <div class="bg-white p-6 rounded shadow space-y-4" id="rates-editor-full"></div>
+            <button onclick="saveRates()" class="mt-4 w-full bg-green-600 text-white font-bold py-3 rounded shadow">حفظ أسعار الصرف</button>
+        </section>
+
+        <!-- ================= SETTINGS TAB ================= -->
+        <section id="settings" class="tab-content hidden max-w-4xl mx-auto">
+            <h2 class="text-2xl font-bold text-slate-800 mb-6">الإعدادات والعملات</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-6 rounded shadow space-y-4">
+                    <h3 class="font-bold border-b pb-2">بيانات الشركة</h3>
+                    <div><label class="text-sm text-slate-600">اسم الشركة</label><input type="text" id="set-name" class="w-full border rounded p-2"></div>
+                    <div><label class="text-sm text-slate-600">الهاتف</label><input type="text" id="set-phone" class="w-full border rounded p-2"></div>
+                    <div><label class="text-sm text-slate-600">العنوان</label><input type="text" id="set-address" class="w-full border rounded p-2"></div>
+                    
+                    <div>
+                        <label class="text-sm text-slate-600">رابط صورة الشعار (اختياري)</label>
+                        <input type="url" id="set-logo" class="w-full border rounded p-2 text-left bg-slate-50" dir="ltr" placeholder="https://example.com/logo.png">
+                    </div>
+                    
+                    <button onclick="saveCompanySettings()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold">حفظ البيانات</button>
+                </div>
+
+                <div class="bg-white p-6 rounded shadow">
+                    <h3 class="font-bold border-b pb-2 mb-4">إضافة عملة جديدة</h3>
+                    <div class="space-y-4">
+                        <div><input type="text" id="new-cur-code" placeholder="الرمز (مثال: TRY)" class="w-full border rounded p-2"></div>
+                        <div><input type="text" id="new-cur-name" placeholder="الاسم (مثال: ليرة تركية)" class="w-full border rounded p-2"></div>
+                        <div><input type="number" step="0.0001" id="new-cur-rate" placeholder="كم شيكل يعادل 100 من هذه العملة؟" class="w-full border rounded p-2"></div>
+                        <button onclick="addCurrency()" class="bg-green-600 text-white px-4 py-3 font-bold rounded w-full"><i class="fas fa-plus"></i> إضافة العملة</button>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-8 text-center"><button onclick="factoryReset()" class="text-red-500 text-sm underline font-bold">تصفير النظام ومسح كافة البيانات بشكل نهائي</button></div>
+        </section>
+    </main>
+
+    <!-- ================= FILTER MODAL ================= -->
+    <div id="filter-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden items-center justify-center backdrop-blur-sm">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 transform transition-all" id="filter-modal-content">
+            <div class="flex justify-between items-center border-b pb-3 mb-4">
+                <h3 class="font-bold text-lg text-slate-800"><i class="fas fa-calendar-alt text-blue-500"></i> تصفية السجل حسب التاريخ</h3>
+                <button onclick="closeFilterModal()" class="text-slate-400 hover:text-red-500 transition-colors"><i class="fas fa-times fa-lg"></i></button>
+            </div>
+            <div class="space-y-2 font-bold text-slate-700">
+                <label class="flex items-center gap-3 cursor-pointer p-3 hover:bg-blue-50 rounded border border-transparent hover:border-blue-200 transition"><input type="radio" name="date-filter" value="all" checked onchange="toggleCustomDates()" class="w-4 h-4 text-blue-600"> <span>كل الأوقات (الافتراضي)</span></label>
+                <label class="flex items-center gap-3 cursor-pointer p-3 hover:bg-blue-50 rounded border border-transparent hover:border-blue-200 transition"><input type="radio" name="date-filter" value="today" onchange="toggleCustomDates()" class="w-4 h-4 text-blue-600"> <span>اليوم</span></label>
+                <label class="flex items-center gap-3 cursor-pointer p-3 hover:bg-blue-50 rounded border border-transparent hover:border-blue-200 transition"><input type="radio" name="date-filter" value="week" onchange="toggleCustomDates()" class="w-4 h-4 text-blue-600"> <span>آخر أسبوع</span></label>
+                <label class="flex items-center gap-3 cursor-pointer p-3 hover:bg-blue-50 rounded border border-transparent hover:border-blue-200 transition"><input type="radio" name="date-filter" value="month" onchange="toggleCustomDates()" class="w-4 h-4 text-blue-600"> <span>آخر شهر</span></label>
+                <label class="flex items-center gap-3 cursor-pointer p-3 hover:bg-blue-50 rounded border border-transparent hover:border-blue-200 transition"><input type="radio" name="date-filter" value="year" onchange="toggleCustomDates()" class="w-4 h-4 text-blue-600"> <span>آخر سنة</span></label>
+                <label class="flex items-center gap-3 cursor-pointer p-3 hover:bg-blue-50 rounded border border-transparent hover:border-blue-200 transition"><input type="radio" name="date-filter" value="custom" onchange="toggleCustomDates()" class="w-4 h-4 text-blue-600"> <span>فترة مخصصة (من - إلى)</span></label>
+            </div>
+            <div id="custom-date-fields" class="hidden mt-4 p-4 bg-slate-100 border border-slate-300 rounded-lg grid grid-cols-2 gap-4">
+                <div><label class="text-xs font-bold text-slate-600 block mb-1">من تاريخ:</label><input type="date" id="filter-start" class="w-full border border-slate-300 rounded p-2 text-sm outline-none focus:border-blue-500"></div>
+                <div><label class="text-xs font-bold text-slate-600 block mb-1">إلى تاريخ:</label><input type="date" id="filter-end" class="w-full border border-slate-300 rounded p-2 text-sm outline-none focus:border-blue-500"></div>
+            </div>
+            <div class="mt-6 flex gap-3">
+                <button onclick="applyFilter()" class="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 shadow-lg transition">تطبيق التصفية</button>
+                <button onclick="closeFilterModal()" class="w-1/3 bg-slate-200 text-slate-800 py-3 rounded-lg font-bold hover:bg-slate-300 transition">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= HIDDEN PRINT TEMPLATES ================= -->
+    <div id="print-wrapper" class="hidden">
+        <div id="tmpl-receipt" class="print-container p-8 mx-auto" style="max-width: 800px; border: 4px solid #0f172a; min-height: 800px; position: relative;">
+            <div class="flex justify-between items-center mb-6 border-b-2 border-black pb-4">
+                <!-- الشعار كبير ودائري ولطيف أعلى اسم المحل -->
+                <div class="text-center w-1/3 flex flex-col items-center justify-center">
+                    <img class="logo-img hidden h-20 w-20 rounded-full object-contain shadow bg-white border-2 border-slate-300 mb-2" src="" alt="Logo">
+                    <h1 class="text-2xl font-black text-slate-900" id="pr-comp-name">Cash Top</h1>
+                    <p class="text-sm font-bold mt-1" id="pr-subtitle">للصرافة والحوالات</p>
+                </div>
+                <div class="text-center w-1/3 flex justify-center">
+                    <h2 class="text-xl font-black receipt-title-line"><span id="pr-title" class="receipt-title-bg receipt-title-neutral">إيصال</span></h2>
+                </div>
+                <div class="text-center w-1/3 text-lg font-bold">
+                    <span id="pr-lbl-ref">رقم:</span> <span id="pr-ref" class="text-red-600 font-mono"></span>
+                </div>
+            </div>
+
+            <table class="w-full mb-6 text-sm border-collapse" style="text-align: inherit;">
+                <tr>
+                    <td class="border border-black p-2 w-1/4 bg-slate-100 font-bold" id="pr-lbl-date">التاريخ والوقت:</td>
+                    <td class="border border-black p-2 w-1/4 text-center" id="pr-date"></td>
+                    <td class="border border-black p-2 w-1/4 bg-slate-100 font-bold" id="pr-lbl-client">المستفيد/العميل:</td>
+                    <td class="border border-black p-2 w-1/4 font-bold text-center" id="pr-client"></td>
+                </tr>
+            </table>
+
+            <div class="border-2 border-black p-6 text-center mb-8 bg-slate-50">
+                <p class="text-lg mb-2 font-bold text-slate-700" id="pr-lbl-amount">المبلغ</p>
+                <h1 class="text-5xl font-black" dir="ltr"><span id="pr-amount"></span> <span id="pr-cur" class="text-2xl"></span></h1>
+                <p class="text-sm mt-4 text-slate-600 font-bold receipt-equivalent-line"><span class="receipt-equivalent-bg"><span id="pr-lbl-eq">المعادل (للقبض/الصرف): </span> <span id="pr-ils" class="font-black"></span></span></p>
+            </div>
+            
+            <div id="pr-extra" class="mb-8 text-sm"></div>
+
+            <div class="flex justify-between px-16 mt-24 text-sm font-bold">
+                <div class="border-t-2 border-black pt-2 text-center w-40" id="pr-lbl-emp">توقيع الموظف</div>
+                <div class="border-t-2 border-black pt-2 text-center w-40" id="pr-lbl-cust">الختم / توقيع العميل</div>
+            </div>
+        </div>
+    </div>
+
+        <script src="firebase-config.js"></script>
+    <script src="local-db.js"></script>
+    <script src="app.js"></script>
+
+</body>
+</html>

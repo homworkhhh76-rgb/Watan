@@ -1,0 +1,38 @@
+{
+  "id": "./index.html",
+  "name": "WATAN PLS LTD للصرافة والحوالات",
+  "short_name": "WATAN",
+  "description": "نظام إدارة الصرافة والحوالات والشيكات مع مزامنة Firebase.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "background_color": "#f0f2f5",
+  "theme_color": "#0f172a",
+  "categories": [
+    "finance",
+    "business",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
